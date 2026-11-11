@@ -290,6 +290,47 @@ class CompanionTests(unittest.TestCase):
                 helper.download_info("synthetic-book")
             remote.assert_not_called()
 
+    def test_download_info_uses_inventory_publication_and_deliverable_ids(self):
+        helper = fixture()
+        helper.state.inventory = [{
+            **BOOK,
+            "publicationId": "publication-upload",
+            "deliverableId": "deliverable-upload",
+            "epubMetaData": {
+                **BOOK["epubMetaData"],
+                "deliverable": [{"identifier": "nested-deliverable",
+                                 "contentFormat": "application/epub+zip"}],
+            },
+        }]
+        response = {"DownloadInfo": {"format": "application/epub+zip", "contentUrl": "https://cdn.example/book"}}
+        with patch.object(helper, "remote", return_value=response) as remote, \
+                patch("companion.public_https", side_effect=lambda url: url):
+            helper.download_info("synthetic-book")
+        self.assertEqual(
+            remote.call_args.args[2],
+            "/cloud/downloadinfo/cHVibGljYXRpb24tdXBsb2Fk/ZGVsaXZlcmFibGUtdXBsb2Fk/type/external-download",
+        )
+
+    def test_download_info_uses_nested_deliverable_id_and_identifier_fallback(self):
+        helper = fixture()
+        helper.state.inventory = [{
+            **BOOK,
+            "publicationId": None,
+            "epubMetaData": {
+                **BOOK["epubMetaData"],
+                "deliverable": [{"identifier": "nested-deliverable",
+                                 "contentFormat": "application/epub+zip"}],
+            },
+        }]
+        response = {"DownloadInfo": {"format": "application/epub+zip", "contentUrl": "https://cdn.example/book"}}
+        with patch.object(helper, "remote", return_value=response) as remote, \
+                patch("companion.public_https", side_effect=lambda url: url):
+            helper.download_info("synthetic-book")
+        self.assertEqual(
+            remote.call_args.args[2],
+            "/cloud/downloadinfo/c3ludGhldGljLWJvb2s%3D/bmVzdGVkLWRlbGl2ZXJhYmxl/type/external-download",
+        )
+
     def test_download_stream_uses_no_credentials_and_validates_zip(self):
         helper = fixture()
         response = Mock(status_code=200)

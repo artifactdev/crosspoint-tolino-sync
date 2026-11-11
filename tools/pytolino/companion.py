@@ -451,8 +451,21 @@ class Companion:
         book = self.book(identifier)
         if not epub_supported(book):
             raise APIError(422, "Only unprotected/watermarked EPUBs are supported; no Adobe DRM/ACSM.")
-        encoded = quote(base64.b64encode(identifier.encode()).decode(), safe="")
-        data = self.remote(client, "GET", f"/cloud/downloadinfo/{encoded}/{encoded}/type/external-download")
+        metadata = book.get("epubMetaData", {})
+        deliverables = metadata.get("deliverable", [])
+        deliverable = deliverables[0] if deliverables and isinstance(deliverables[0], dict) else {}
+
+        def first_id(*values):
+            return next((value for value in values
+                         if isinstance(value, str) and value and len(value) <= 4096), identifier)
+
+        publication_id = first_id(book.get("publicationId"), metadata.get("publicationId"))
+        deliverable_id = first_id(book.get("deliverableId"), metadata.get("deliverableId"),
+                                  deliverable.get("identifier"))
+        encoded_publication = quote(base64.b64encode(publication_id.encode()).decode(), safe="")
+        encoded_deliverable = quote(base64.b64encode(deliverable_id.encode()).decode(), safe="")
+        data = self.remote(client, "GET",
+                           f"/cloud/downloadinfo/{encoded_publication}/{encoded_deliverable}/type/external-download")
         info = data.get("DownloadInfo") if isinstance(data, dict) else None
         if not isinstance(info, dict) or str(info.get("format", "")).lower() != EPUB:
             raise APIError(422, "Provider did not offer an EPUB.")

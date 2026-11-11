@@ -49,6 +49,22 @@ then `docker compose up -d`. The old source-build files
 unchanged and remain available as the legacy separate-service development setup.
 `SYNC_IMAGE` is no longer used by the registry deployment.
 
+## Optional passwordless web access
+
+Authentication is enabled by default. For an isolated trusted LAN only, set
+`ALLINONE_DISABLE_WEB_AUTH=1`, `SYNC_WEB_AUTH_USER` to an **existing** Sync
+username and `SYNC_WEB_AUTH_ORIGIN` to the exact browser-visible Sync origin
+(for example `http://192.168.8.3:18082`, without a path/trailing slash).
+Create the account before enabling this and recreate the container afterward.
+This removes dashboard/noVNC passwords and auto-opens that account in `/app/`.
+Anyone on the network can control your browser/cloud account and read,
+modify or delete library/Sync data. Never publish these ports to the Internet.
+Keep all API/encryption keys and existing secret mounts; reader credentials
+and provider login remain required. Host/Origin checks remain enforced.
+Cross-origin passwordless access is rejected. Set the switch back to `0` and recreate to
+restore web authentication, including for already-open passwordless tabs.
+HTTP connector submission separately requires `SYNC_ALLOW_INSECURE_HTTP=1`.
+
 ## Prepare a host and private image access
 
 These example paths are deliberately **outside the repository**:
@@ -165,6 +181,12 @@ Direct HTTP on a trusted LAN still exposes the helper API key, Sync account
 credentials and traffic in transit. Prefer HTTPS or a VPN for untrusted Wi-Fi
 or remote readers. The legacy VNC password is not encryption or a substitute
 for network isolation.
+
+If you explicitly accept this risk, set `SYNC_ALLOW_INSECURE_HTTP=1` in
+the deployment environment and recreate the container to permit HTTP connector
+credential submission. It defaults to `0` and does not enable proxy trust.
+Keep `SYNC_TRUST_PROXY=0` without a proxy. Never use this opt-in on an
+Internet-facing or untrusted network; HTTPS is recommended.
 
 Start with the separately stored env file:
 

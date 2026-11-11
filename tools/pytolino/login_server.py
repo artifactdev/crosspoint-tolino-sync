@@ -263,7 +263,8 @@ def create_server(port=8080):
     session = secrets.token_hex(32)
     allowed_host = f"127.0.0.1:{port}"
     configured_origin = os.environ.get("HELPER_ADMIN_ORIGIN")
-    admin_password_file = os.environ.get("HELPER_ADMIN_PASSWORD_FILE")
+    disable_web_auth = os.environ.get("ALLINONE_DISABLE_WEB_AUTH", "0") in ("1", "true")
+    admin_password_file = None if disable_web_auth else os.environ.get("HELPER_ADMIN_PASSWORD_FILE")
     admin_password = Path(admin_password_file).read_text().strip() if admin_password_file else None
     if admin_password is not None and (len(admin_password) < 16 or not admin_password.isascii()):
         raise ValueError("Admin password must contain at least 16 ASCII characters.")
@@ -273,7 +274,7 @@ def create_server(port=8080):
             or parsed_origin.username or parsed_origin.password or parsed_origin.path
             or parsed_origin.query or parsed_origin.fragment):
         raise ValueError("HELPER_ADMIN_ORIGIN must be an exact HTTP(S) origin without a trailing slash.")
-    if configured_origin and parsed_origin.hostname != "127.0.0.1":
+    if configured_origin and parsed_origin.hostname != "127.0.0.1" and not disable_web_auth:
         if not admin_password or not os.environ.get("HELPER_VNC_PASSWORD_FILE"):
             raise ValueError("Remote admin requires admin and VNC password files.")
     browser_origin = os.environ.get("HELPER_BROWSER_ORIGIN", "http://127.0.0.1:6080")
@@ -473,7 +474,8 @@ def main():
             time.sleep(0.1)
         else:
             raise TimeoutError("Virtual display did not become ready.")
-        password_file = os.environ.get("HELPER_VNC_PASSWORD_FILE")
+        password_file = (None if os.environ.get("ALLINONE_DISABLE_WEB_AUTH", "0") in ("1", "true")
+                         else os.environ.get("HELPER_VNC_PASSWORD_FILE"))
         if password_file:
             password = Path(password_file).read_text().strip()
             if len(password) != 8 or not password.isascii() or any(char.isspace() for char in password):

@@ -36,7 +36,7 @@ def wait_healthy(name):
     raise TimeoutError("Combined container did not become healthy.")
 
 
-def main(image, single_path=False):
+def main(image, single_path=False, passwordless=False):
     name = "tolino-allinone-smoke-" + uuid.uuid4().hex[:12]
     volume = name + "-data"
     created = False
@@ -81,6 +81,15 @@ def main(image, single_path=False):
                 "SYNC_REGISTRATION_DISABLED": "1",
                 "ALLINONE_DATA_DIR": data_path,
             }
+            if passwordless:
+                environment.update({
+                    "ALLINONE_DISABLE_WEB_AUTH": "1",
+                    "SYNC_WEB_AUTH_USER": "smoke-reader",
+                    "SYNC_WEB_AUTH_ORIGIN": "http://sync.test:8082",
+                    "SYNC_REGISTRATION_DISABLED": "0",
+                })
+                environment.pop("HELPER_ADMIN_PASSWORD_FILE")
+                environment.pop("HELPER_VNC_PASSWORD_FILE")
             for key, value in environment.items():
                 command.extend(["-e", key + "=" + value])
             docker(*command, image, capture=True)
@@ -92,12 +101,64 @@ def main(image, single_path=False):
                    "assert r.status==200 and b'<html' in r.read();"
                    f"assert pathlib.Path('{data_path}/sync/crosspoint.db').is_file();"
                    f"pathlib.Path('{data_path}/bridge/smoke-marker').write_text('preserved')")
+            protected = ["http://127.0.0.1:8081/api/status"]
+            if not passwordless:
+                protected.append("http://127.0.0.1:8080/")
             docker("exec", name, "python", "-c",
                    "import urllib.request,urllib.error\n"
-                   "for url in ['http://127.0.0.1:8080/','http://127.0.0.1:8081/api/status']:\n"
+                   f"for url in {protected!r}:\n"
                    " try: urllib.request.urlopen(url)\n"
                    " except urllib.error.HTTPError as e: assert e.code==401\n"
                    " else: raise AssertionError('Unauthenticated service access')")
+            docker("exec", name, "python", "-c",
+                   "import socket\n"
+                   "with socket.create_connection(('127.0.0.1',5900)) as s:\n"
+                   " s.settimeout(3)\n"
+                   " def read(n):\n"
+                   "  data=b''\n"
+                   "  while len(data)<n:\n"
+                   "   part=s.recv(n-len(data))\n"
+                   "   assert part, 'VNC handshake closed'\n"
+                   "   data+=part\n"
+                   "  return data\n"
+                   " assert read(12).startswith(b'RFB ')\n"
+                   " s.sendall(b'RFB 003.008\\n')\n"
+                   " types=read(read(1)[0])\n"
+                   f" assert (1 in types)=={passwordless!r}, types\n")
+            if passwordless:
+                docker("exec", name, "python", "-c",
+                       "import json,urllib.request,urllib.error,hashlib\n"
+                       "assert urllib.request.urlopen('http://127.0.0.1:8080/').status==200\n"
+                       "base='http://127.0.0.1:8082'\n"
+                       "body=json.dumps({'username':'smoke-reader','password':hashlib.md5(b'synthetic-password').hexdigest()}).encode()\n"
+                       "r=urllib.request.urlopen(urllib.request.Request(base+'/users/create',data=body,headers={'Content-Type':'application/json'}))\n"
+                       "assert r.status==201\n"
+                       "headers={'x-crosspoint-web':'1','Host':'sync.test:8082'}\n"
+                       "r=urllib.request.urlopen(urllib.request.Request(base+'/auth/web-access',headers=headers))\n"
+                       "assert json.load(r)=={'enabled':True,'username':'smoke-reader'}\n"
+                       "assert urllib.request.urlopen(urllib.request.Request(base+'/api/v1/connectors',headers=headers)).status==200\n"
+                       "for path,extra,expected in [('/users/auth',{},401),('/api/v1/connectors',{},401),"
+                       "('/api/v1/connectors',dict(headers,Origin='http://evil.test'),403)]:\n"
+                       " try: urllib.request.urlopen(urllib.request.Request(base+path,headers=extra))\n"
+                       " except urllib.error.HTTPError as e: assert e.code==expected\n"
+                       " else: raise AssertionError('Access boundary bypassed')\n")
+                docker("exec", name, "python", "-c",
+                       "from selenium import webdriver\n"
+                       "from selenium.webdriver.chrome.service import Service\n"
+                       "from selenium.webdriver.common.by import By\n"
+                       "from selenium.webdriver.support.ui import WebDriverWait\n"
+                       "options=webdriver.ChromeOptions()\n"
+                       "for arg in ['--headless=new','--no-sandbox','--disable-dev-shm-usage',"
+                       "'--no-proxy-server','--host-resolver-rules=MAP sync.test 127.0.0.1']:\n"
+                       " options.add_argument(arg)\n"
+                       "options.binary_location='/usr/bin/chromium'\n"
+                       "driver=webdriver.Chrome(service=Service('/usr/bin/chromedriver'),options=options)\n"
+                       "try:\n"
+                       " driver.get('http://sync.test:8082/app/')\n"
+                       " WebDriverWait(driver,30).until(lambda d: 'Web login is disabled' in d.find_element(By.TAG_NAME,'body').text)\n"
+                       " assert not driver.find_elements(By.XPATH,\"//h2[text()='Sign in']\")\n"
+                       " assert driver.execute_script('return window.isSecureContext') is False\n"
+                       "finally: driver.quit()\n")
             docker("stop", "--time", "25", name, capture=True)
             exit_code = docker("inspect", "--format", "{{.State.ExitCode}}", name, capture=True).stdout.strip()
             if exit_code != "0":
@@ -109,7 +170,8 @@ def main(image, single_path=False):
                    f"assert Path('{data_path}/bridge/smoke-marker').read_text()=='preserved';"
                    f"assert Path('{data_path}/sync/crosspoint.db').is_file()")
             print("PASS: combined bridge/browser/Sync health, authenticated endpoints, "
-                  "Sync web app, graceful stop, restart and persistent data.")
+                  "Sync web app, VNC auth policy, graceful stop, restart and persistent data."
+                  + (" Passwordless web access and API isolation verified." if passwordless else ""))
         finally:
             if created:
                 docker("rm", "-f", name, capture=True)
@@ -126,4 +188,5 @@ def main(image, single_path=False):
 
 if __name__ == "__main__":
     main(sys.argv[1] if len(sys.argv) > 1 else "crosspoint-tolino-bridge:dev",
-         single_path="--single-path" in sys.argv[2:])
+         single_path="--single-path" in sys.argv[2:],
+         passwordless="--passwordless" in sys.argv[2:])

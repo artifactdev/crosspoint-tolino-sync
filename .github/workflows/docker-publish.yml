@@ -66,6 +66,8 @@ jobs:
           npm ci --prefix app
           npm run build --prefix app
           npx vitest run test/tolino.test.ts test/connectors.test.ts
+          cd app
+          npx vitest run src/api.test.js src/App.logout.test.jsx src/web-login.test.js
 
   verify-images:
     needs: verify-sync
@@ -102,12 +104,17 @@ jobs:
           cache-from: type=gha,scope=allinone
       - name: Test combined service lifecycle and persistence
         run: |
+          docker run --rm --entrypoint python \
+            -v "$PWD/tools/pytolino:/tests:ro" -w /tests \
+            local/crosspoint-tolino-bridge:validation \
+            -m unittest test_session_store test_companion -q
           docker run --rm --user 0:0 --entrypoint python \
             -v "$PWD/tools/pytolino:/tests:ro" -w /tests \
             local/crosspoint-tolino-bridge:validation \
             -m unittest test_allinone.SmokeCleanupTests -v
           python tools/pytolino/allinone_smoke.py local/crosspoint-tolino-bridge:validation
           python tools/pytolino/allinone_smoke.py local/crosspoint-tolino-bridge:validation --single-path
+          python tools/pytolino/allinone_smoke.py local/crosspoint-tolino-bridge:validation --single-path --passwordless
 
   publish:
     if: github.event_name != 'pull_request'

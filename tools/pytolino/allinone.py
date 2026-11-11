@@ -17,10 +17,11 @@ from urllib.parse import urlsplit
 
 def healthcheck():
     key = Path(os.environ["HELPER_API_KEY_FILE"]).read_text().strip()
-    password = Path(os.environ["HELPER_ADMIN_PASSWORD_FILE"]).read_text().strip()
+    disable_web_auth = os.environ.get("ALLINONE_DISABLE_WEB_AUTH", "0") in ("1", "true")
+    password = "" if disable_web_auth else Path(os.environ["HELPER_ADMIN_PASSWORD_FILE"]).read_text().strip()
     for port, endpoint, origin, authorization in (
         (8080, "/", os.environ["HELPER_ADMIN_ORIGIN"],
-         "Basic " + base64.b64encode(("admin:" + password).encode()).decode()),
+         "" if disable_web_auth else "Basic " + base64.b64encode(("admin:" + password).encode()).decode()),
         (8081, "/api/status", os.environ["HELPER_PUBLIC_URL"], "Bearer " + key),
         (8082, os.environ.get("SYNC_BASE_PATH", "").rstrip("/") + "/healthz", "", ""),
     ):
@@ -99,15 +100,25 @@ def main():
     for folder in (data / "bridge", data / "sync"):
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     bridge_env = dict(os.environ, HELPER_DATA_DIR=str(data / "bridge"))
+    disable_web_auth = os.environ.get("ALLINONE_DISABLE_WEB_AUTH", "0") in ("1", "true")
+    if disable_web_auth and not os.environ.get("SYNC_WEB_AUTH_USER", "").strip():
+        raise ValueError("SYNC_WEB_AUTH_USER must name an existing Sync account when web authentication is disabled.")
     sync_env = dict(
         os.environ, TOKEN_ENC_KEY=key, DATABASE_PATH=str(data / "sync" / "crosspoint.db"),
         PORT="8082", WEB_APP_DIR="/app/sync/web", LISTEN_ADDRESS="::",
         TOLINO_HELPER_URL="http://127.0.0.1:8081",
         ALLOW_HTTP_LOCALHOST=os.environ.get("SYNC_ALLOW_HTTP_LOCALHOST", "1"),
+        ALLOW_INSECURE_HTTP=os.environ.get("SYNC_ALLOW_INSECURE_HTTP", "0"),
         TRUST_PROXY=os.environ.get("SYNC_TRUST_PROXY", "0"),
         REGISTRATION_DISABLED=os.environ.get("SYNC_REGISTRATION_DISABLED", "0"),
         BASE_PATH=os.environ.get("SYNC_BASE_PATH", ""),
+        WEB_AUTH_USER=os.environ.get("SYNC_WEB_AUTH_USER", "") if disable_web_auth else "",
+        WEB_AUTH_ORIGIN=os.environ.get("SYNC_WEB_AUTH_ORIGIN", "") if disable_web_auth else "",
     )
+    if disable_web_auth:
+        print("WARNING: dashboard, browser and Sync web login disabled. Anyone on this network can control your account and library. Trusted isolated LAN only.", file=sys.stderr, flush=True)
+    if sync_env["ALLOW_INSECURE_HTTP"] in ("1", "true"):
+        print("WARNING: insecure HTTP connector credentials enabled. Use only a trusted network; traffic is unencrypted.", file=sys.stderr, flush=True)
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())

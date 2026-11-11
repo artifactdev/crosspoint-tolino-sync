@@ -1,3 +1,100 @@
+diff --git a/app/src/App.jsx b/app/src/App.jsx
+index 07e413e..4adff6a 100644
+--- a/app/src/App.jsx
++++ b/app/src/App.jsx
+@@ -4,7 +4,7 @@ import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link'
+ import { widgetRoute } from './widgetLinks.js'
+ import { ChartColumn, CloudOff, Compass, MessageSquareQuote, Eye, EyeOff, LibraryBig, Loader2, Lock, Send as SendIcon, Server, Settings as SettingsIcon, ShieldCheck, User } from 'lucide-react'
+ import { useTheme } from './theme.js'
+-import { DEFAULT_SERVER, syncShortcutsCache, api, hostedServer, isApp, lastServer, loadSession, login, logout, offline, cached, recover, register, saveSession } from './api.js'
++import { DEFAULT_SERVER, syncShortcutsCache, api, hostedServer, isApp, lastServer, loadSession, login, logout, offline, cached, recover, register, saveSession, webLogin } from './api.js'
+ import { ErrorNote, LoadCacheProvider, PageSkeleton, RefreshPill, Toaster, useLoad } from './ui.jsx'
+ import Library from './Library.jsx'
+ import Book from './Book.jsx'
+@@ -46,6 +46,16 @@ function Login({ onLogin }) {
+   const [busy, setBusy] = useState(false)
+   const passwordRef = useRef(null)
+   const usernameRef = useRef(null)
++  useEffect(() => {
++    if (!hostedServer) return
++    let active = true
++    webLogin().then((session) => {
++      if (active && session) onLogin(session)
++    }).catch((error) => {
++      if (active) setError(error.message)
++    })
++    return () => { active = false }
++  }, [onLogin])
+   // Functional update: a password manager fills both fields in one go, and spreading
+   // this render's `form` would let the second fill wipe out the first.
+   const set = (name) => (e) => {
+@@ -544,6 +554,7 @@ export default function App() {
+   }} />
+   return (
+     <LoadCacheProvider key={JSON.stringify([session.server, session.username])}>
++      {session.webAuth && <p role="status" className="bg-amber-100 px-4 py-2 text-sm text-amber-950">Web login is disabled. Everyone with network access can control this Sync account.</p>}
+       <Home
+         session={session}
+         theme={theme}
+diff --git a/app/src/App.logout.test.jsx b/app/src/App.logout.test.jsx
+index fb98b7c..771672e 100644
+--- a/app/src/App.logout.test.jsx
++++ b/app/src/App.logout.test.jsx
+@@ -4,11 +4,13 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+ 
+ const settingsCallbacks = vi.hoisted(() => ({ onSession: null, onLogout: null }))
++const webAccess = vi.hoisted(() => ({ server: null }))
+ 
+ vi.mock('./api.js', () => ({
+-  DEFAULT_SERVER: 'https://sync.test', isApp: false, hostedServer: null,
++  DEFAULT_SERVER: 'https://sync.test', isApp: false, get hostedServer() { return webAccess.server },
+   loadSession: vi.fn(), lastServer: vi.fn(() => 'https://sync.test'),
+   login: vi.fn(), register: vi.fn(), logout: vi.fn(), saveSession: vi.fn(), syncShortcutsCache: vi.fn(),
++  webLogin: vi.fn(),
+   offline: new EventTarget(),
+   api: { books: vi.fn(), summary: vi.fn(), activity: vi.fn(), readingGoals: vi.fn() },
+   cached: { books: () => [], summary: () => null, activity: () => null, activityUpdatedAt: () => null, readingGoals: () => null },
+@@ -29,10 +31,12 @@ vi.mock('./Wallpaper.jsx', () => ({ default: () => null }))
+ vi.mock('./Browse.jsx', () => ({ default: () => null }))
+ vi.mock('./Clippings.jsx', () => ({ default: () => null }))
+ vi.mock('./Install.jsx', () => ({ default: () => null }))
+-const { api, loadSession, logout, saveSession } = await import('./api.js')
++const { api, loadSession, logout, saveSession, webLogin } = await import('./api.js')
+ const { default: App } = await import('./App.jsx')
+ 
+ beforeEach(() => {
++  webAccess.server = null
++  webLogin.mockReset().mockResolvedValue(null)
+   location.hash = '#/settings'
+   loadSession.mockReturnValue({ server: 'https://sync.test', username: 'reader', key: 'secret' })
+   api.books.mockReset().mockResolvedValue([])
+@@ -43,6 +47,25 @@ beforeEach(() => {
+ })
+ afterEach(cleanup)
+ 
++it('opens the configured passwordless hosted account without saving a device key', async () => {
++  loadSession.mockReturnValue(null)
++  webAccess.server = 'http://sync.test'
++  webLogin.mockResolvedValue({ server: webAccess.server, username: 'reader', webAuth: true })
++  render(<App />)
++  await screen.findByText(/Web login is disabled/)
++  expect(screen.queryByRole('heading', { name: 'Sign in' })).toBeNull()
++  expect(saveSession).not.toHaveBeenCalled()
++})
++
++it('surfaces passwordless configuration errors on the sign-in screen', async () => {
++  loadSession.mockReturnValue(null)
++  webAccess.server = 'http://sync.test'
++  webLogin.mockRejectedValue(new Error('Configured WEB_AUTH_USER does not exist'))
++  render(<App />)
++  await screen.findByText('Configured WEB_AUTH_USER does not exist')
++  expect(screen.getByRole('heading', { name: 'Sign in' })).toBeTruthy()
++})
++
+ it('shows the sign-in form only after logout confirms native removal', async () => {
+   let finish
+   logout.mockReturnValueOnce(new Promise((r) => { finish = r }))
 diff --git a/app/src/Settings.jsx b/app/src/Settings.jsx
 index a7298ea..3db904c 100644
 --- a/app/src/Settings.jsx
@@ -10,6 +107,207 @@ index a7298ea..3db904c 100644
    audiobookshelf: 'Keeps your place between the ebook and the audiobook. Create an API key in Audiobookshelf under Settings, Users, API Keys.',
    jellyfin: 'Syncs reading progress with your Jellyfin book library (Jellyfin 12.0 or newer). Sign in with your Jellyfin username and password.',
    bookorbit: 'Syncs progress both ways, adds clippings as highlights, and exchanges reading sessions for matched books. Imports BookOrbit history and exports sessions recorded by newer CrossInk firmware. Includes other BookOrbit reader history alongside your device stats. Repeated sessions are counted once.',
+diff --git a/app/src/api.js b/app/src/api.js
+index 5e98bc9..8b8c135 100644
+--- a/app/src/api.js
++++ b/app/src/api.js
+@@ -44,6 +44,19 @@ function read(key) {
+ export const loadSession = () => read(KEY)
+ export const lastServer = () => read(LAST_SERVER) ?? DEFAULT_SERVER
+ 
++export async function webLogin() {
++  if (!hostedServer) return null
++  const res = await http(hostedServer + '/auth/web-access', {
++    cache: 'no-store', credentials: 'omit', headers: { 'x-crosspoint-web': '1' },
++  })
++  if (!res.ok) {
++    const body = await res.json()
++    throw new Error(body.message || `Server error ${res.status}`)
++  }
++  const data = await res.json()
++  return data.enabled ? { server: hostedServer, username: data.username, webAuth: true } : null
++}
++
+ // After a password change: the same session with the new key.
+ export function saveSession(session) {
+   localStorage.setItem(KEY, JSON.stringify(session))
+@@ -126,8 +139,9 @@ async function call(session, path, init = {}, keepOffline = true, { offlineFallb
+       cache: 'no-store',
+       headers: {
+         ...(init.body instanceof FormData ? {} : { 'content-type': 'application/json' }),
+-        'x-auth-user': session.username,
+-        'x-auth-key': session.key,
++        ...(session.webAuth
++          ? { 'x-crosspoint-web': '1' }
++          : { 'x-auth-user': session.username, 'x-auth-key': session.key }),
+       },
+     })
+   } catch (e) {
+diff --git a/app/src/web-login.test.js b/app/src/web-login.test.js
+new file mode 100644
+index 0000000..0fa908c
+--- /dev/null
++++ b/app/src/web-login.test.js
+@@ -0,0 +1,44 @@
++// @vitest-environment jsdom
++import { beforeEach, expect, it, vi } from 'vitest'
++import { JSDOM } from 'jsdom'
++
++vi.mock('@tauri-apps/plugin-http', () => ({ fetch: vi.fn() }))
++const fetchMock = vi.fn()
++vi.stubGlobal('fetch', fetchMock)
++vi.stubGlobal('location', new URL('http://sync.test/reading/app/'))
++vi.stubGlobal('localStorage', new JSDOM('', { url: 'http://sync.test' }).window.localStorage)
++const { api, webLogin } = await import('./api.js')
++const response = (data, status = 200) => ({ ok: status === 200, status, json: async () => data })
++
++beforeEach(() => {
++  fetchMock.mockReset()
++  localStorage.clear()
++})
++
++it('bootstraps the same hosted server without receiving or saving a device credential', async () => {
++  fetchMock.mockResolvedValueOnce(response({ enabled: true, username: 'reader' }))
++  const session = await webLogin()
++  expect(session).toEqual({ server: 'http://sync.test/reading', username: 'reader', webAuth: true })
++  expect(fetchMock).toHaveBeenCalledWith('http://sync.test/reading/auth/web-access', {
++    cache: 'no-store', credentials: 'omit', headers: { 'x-crosspoint-web': '1' },
++  })
++  expect(localStorage.length).toBe(0)
++  fetchMock.mockResolvedValueOnce(response({ goals: [] }))
++  await api.readingGoals(session)
++  const init = fetchMock.mock.calls[1][1]
++  expect(init.headers['x-crosspoint-web']).toBe('1')
++  expect(init.headers).not.toHaveProperty('x-auth-user')
++  expect(init.headers).not.toHaveProperty('x-auth-key')
++})
++
++it('retains the login screen when passwordless access is disabled', async () => {
++  fetchMock.mockResolvedValueOnce(response({ enabled: false }))
++  expect(await webLogin()).toBeNull()
++})
++
++it('reports server configuration and network errors rather than pretending to log in', async () => {
++  fetchMock.mockResolvedValueOnce(response({ message: 'Configured user does not exist' }, 409))
++  await expect(webLogin()).rejects.toThrow('Configured user does not exist')
++  fetchMock.mockRejectedValueOnce(new TypeError('Network unavailable'))
++  await expect(webLogin()).rejects.toThrow('Network unavailable')
++})
+diff --git a/src/app.ts b/src/app.ts
+index 4a760c7..906a97e 100644
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -3,7 +3,7 @@ import { Hono } from 'hono';
+ import { cors } from 'hono/cors';
+ import type { DB } from './db/db.js';
+ import type { Config } from './config.js';
+-import { sessionOrKeyAuth, type AppEnv } from './auth/middleware.js';
++import { passwordlessWebAuth, sessionOrKeyAuth, type AppEnv } from './auth/middleware.js';
+ import { kosyncRoutes } from './routes/kosync.js';
+ import { meRoutes } from './routes/v1/me.js';
+ import { authRoutes } from './routes/auth.js';
+@@ -79,11 +79,17 @@ export function createApp(db: DB, config: Config, opts: AppOptions = {}): Hono<A
+ 
+   // Web account session auth (browser signup/login) + kosync link management.
+   app.route('/auth', authRoutes(db, config));
++  app.get('/auth/web-access', passwordlessWebAuth(db, config.webAuthUser, config.webAuthOrigin), (c) => {
++    const user = c.get('user');
++    if (!user) return c.json({ enabled: false });
++    return c.json({ enabled: true, username: user.username });
++  });
+   app.route('/account', accountRoutes(db, config));
+ 
+   // Extended CrossPoint API; accepts either the web session cookie or the
+   // device x-auth headers.
+   const v1 = new Hono<AppEnv>();
++  v1.use('*', passwordlessWebAuth(db, config.webAuthUser, config.webAuthOrigin));
+   v1.use('*', sessionOrKeyAuth(db));
+   v1.route('/', progressRoutes(db, refreshProgress));
+   v1.route('/', bookmarkRoutes(db));
+@@ -91,7 +97,7 @@ export function createApp(db: DB, config: Config, opts: AppOptions = {}): Hono<A
+   v1.route('/', statsRoutes(db, opts.connectorTransport));
+   v1.route('/', sleepImageRoutes(db));
+   v1.route('/', documentRoutes(db, opts.connectorTransport));
+-  v1.route('/', connectorRoutes(db, opts.connectorTransport, config.trustProxy, basePath, config.allowHttpLocalhost));
++  v1.route('/', connectorRoutes(db, opts.connectorTransport, config.trustProxy, basePath, config.allowHttpLocalhost, config.allowInsecureHttp));
+   v1.route('/', meRoutes(db));
+   v1.route('/', profileSettingsRoutes(db));
+   // Self-host-only Amazon device registration (off unless explicitly enabled).
+diff --git a/src/auth/middleware.ts b/src/auth/middleware.ts
+index e19930d..14fb5d4 100644
+--- a/src/auth/middleware.ts
++++ b/src/auth/middleware.ts
+@@ -121,6 +121,36 @@ export function masterAuth(db: DB): MiddlewareHandler<AppEnv> {
+  * A signed-in master account with no kosync account linked yet gets 409 (the
+  * web UI prompts to create/link one before showing data).
+  */
++export function passwordlessWebAuth(db: DB, username?: string, origin?: string): MiddlewareHandler<AppEnv> {
++  if (username && (!origin || new URL(origin).origin !== origin || !/^https?:\/\//.test(origin))) {
++    throw new Error('WEB_AUTH_ORIGIN must be the exact browser-visible HTTP(S) Sync origin');
++  }
++  const host = origin ? new URL(origin).host : undefined;
++  return async (c, next) => {
++    if (!username || c.req.header('x-crosspoint-web') !== '1'
++      || c.req.header('x-auth-user') !== undefined || c.req.header('x-auth-key') !== undefined) {
++      return next();
++    }
++    // Not included in API CORS allowHeaders: only the hosted same-origin UI
++    // can use this opt-in, never a cross-origin site or a device credential.
++    const requestOrigin = c.req.header('origin');
++    const fetchSite = c.req.header('sec-fetch-site');
++    // Plain LAN HTTP does not send Fetch Metadata, but browsers still preflight
++    // this custom header cross-origin and send Origin on state-changing calls.
++    if (new URL(c.req.url).host !== host
++      || (fetchSite !== undefined && fetchSite !== 'same-origin')
++      || (requestOrigin !== undefined && requestOrigin !== origin)
++      || (!['GET', 'HEAD'].includes(c.req.method) && requestOrigin !== origin && fetchSite !== 'same-origin')) {
++      return c.json({ message: 'Passwordless web access requires a same-origin request' }, 403);
++    }
++    const user = db.prepare('SELECT id, username FROM users WHERE username = ?').get(username) as AuthedUser | undefined;
++    if (!user) return c.json({ message: 'Configured WEB_AUTH_USER does not exist; create the Sync account with normal authentication first' }, 409);
++    c.set('user', user);
++    c.header('Cache-Control', 'no-store');
++    return next();
++  };
++}
++
+ export function sessionOrKeyAuth(db: DB): MiddlewareHandler<AppEnv> {
+   const headerAuth = authMiddleware(db);
+   const getAccount = db.prepare('SELECT id, handle FROM accounts WHERE id = ?');
+@@ -129,6 +159,7 @@ export function sessionOrKeyAuth(db: DB): MiddlewareHandler<AppEnv> {
+   );
+   return async (c, next) => {
+     c.header('Cache-Control', 'no-store');
++    if (c.get('user')) return next();
+     // An app/device explicitly selects its sync account. A browser cookie left
+     // by the web dashboard must not override that choice (or mask a bad key).
+     if (c.req.header('x-auth-user') !== undefined || c.req.header('x-auth-key') !== undefined) {
+diff --git a/src/config.ts b/src/config.ts
+index 2526c3e..6ca9a92 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -8,6 +8,11 @@ export interface Config {
+   trustProxy: boolean;
+   /** Opt-in for Docker localhost testing with the host port bound to loopback. */
+   allowHttpLocalhost?: boolean;
++  /** Explicit insecure deployment opt-in; never enable on untrusted networks. */
++  allowInsecureHttp?: boolean;
++  /** Existing sync identity exposed to the same-origin web app without a password. */
++  webAuthUser?: string;
++  webAuthOrigin?: string;
+   /**
+    * Origins allowed to call the sync API from a browser. '*' (the default)
+    *   is safe because the API authenticates with headers, not cookies, so
+@@ -35,6 +40,9 @@ export function fromEnv(env: NodeJS.ProcessEnv = process.env): Config {
+       ? env.TRUST_PROXY === 'true' || env.TRUST_PROXY === '1'
+       : Boolean(env.RAILWAY_ENVIRONMENT),
+     allowHttpLocalhost: env.ALLOW_HTTP_LOCALHOST === 'true' || env.ALLOW_HTTP_LOCALHOST === '1',
++    allowInsecureHttp: env.ALLOW_INSECURE_HTTP === 'true' || env.ALLOW_INSECURE_HTTP === '1',
++    webAuthUser: env.WEB_AUTH_USER?.trim() || undefined,
++    webAuthOrigin: env.WEB_AUTH_ORIGIN,
+     corsOrigins: env.CORS_ORIGINS
+       ? env.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+       : '*',
 diff --git a/src/connectors/bookfusion-epub.ts b/src/connectors/bookfusion-epub.ts
 index 6cce9ce..3c9732c 100644
 --- a/src/connectors/bookfusion-epub.ts
@@ -459,6 +757,86 @@ index 8f6b5d4..d705d23 100644
      }
      autoPause(db, { userId: user.id, document: canonical });
      const row = db
+diff --git a/src/routes/v1/connectors.ts b/src/routes/v1/connectors.ts
+index 3ba6ee6..3d70e1e 100644
+--- a/src/routes/v1/connectors.ts
++++ b/src/routes/v1/connectors.ts
+@@ -140,9 +140,10 @@ export const CREDENTIAL_HTTPS_REQUIRED = 'Connector credentials require HTTPS to
+   + 'If HTTPS ends at a reverse proxy, configure TRUST_PROXY=true on the Sync server '
+   + 'and have the proxy send X-Forwarded-Proto: https. Only enable proxy trust when direct access to Sync is blocked.';
+ 
+-export function credentialRequestIsSecure(c: Context<AppEnv>, trustProxy: boolean, allowHttpLocalhost = false): boolean {
++export function credentialRequestIsSecure(c: Context<AppEnv>, trustProxy: boolean, allowHttpLocalhost = false, allowInsecureHttp = false): boolean {
+   const url = new URL(c.req.url);
+   if (url.protocol === 'https:') return true;
++  if (url.protocol === 'http:' && allowInsecureHttp) return true;
+   const incoming = c.env?.incoming;
+   const peerAddress = incoming?.socket?.remoteAddress;
+   // Docker NAT can give a host-local request a bridge peer address. Only an
+@@ -168,7 +169,8 @@ export function connectorRoutes(
+   transport: HttpTransport = fetchTransport,
+   trustProxy = false,
+   basePath = '',
+-  allowHttpLocalhost = false
++  allowHttpLocalhost = false,
++  allowInsecureHttp = false
+ ): Hono<AppEnv> {
+   const app = new Hono<AppEnv>();
+ 
+@@ -234,7 +236,7 @@ export function connectorRoutes(
+     if (conn.oauth) {
+       return c.json({ code: 2003, message: `Update the CrossPoint Sync app to sign in with ${conn.displayName}.` }, 400);
+     }
+-    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost)) {
++    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost, allowInsecureHttp)) {
+       return c.json({ code: 2003, message: CREDENTIAL_HTTPS_REQUIRED }, 400);
+     }
+     if (!secretsEnabled()) {
+@@ -278,7 +280,7 @@ export function connectorRoutes(
+     const conn = getConnector(c.req.param('id'));
+     if (!conn) return c.json({ code: 2003, message: 'Unknown connector' }, 404);
+     if (!conn.beginLink) return c.json({ code: 2003, message: 'Connector has no device link' }, 400);
+-    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost)) {
++    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost, allowInsecureHttp)) {
+       return c.json({ code: 2003, message: CREDENTIAL_HTTPS_REQUIRED }, 400);
+     }
+     if (!secretsEnabled()) {
+@@ -304,7 +306,7 @@ export function connectorRoutes(
+     const conn = getConnector(c.req.param('id'));
+     if (!conn) return c.json({ code: 2003, message: 'Unknown connector' }, 404);
+     if (!conn.pollLink) return c.json({ code: 2003, message: 'Connector has no device link' }, 400);
+-    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost)) {
++    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost, allowInsecureHttp)) {
+       return c.json({ code: 2003, message: CREDENTIAL_HTTPS_REQUIRED }, 400);
+     }
+     let deviceCode: unknown;
+@@ -374,7 +376,7 @@ export function connectorRoutes(
+     const config = conn.oauth!();
+     const clientId = getClientId(db, user.id, conn.id) ?? config.clientId;
+     if (!clientId) return c.json({ code: 2003, message: `Add your ${conn.displayName} app's Client ID first.` }, 400);
+-    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost)) {
++    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost, allowInsecureHttp)) {
+       return c.json({ code: 2003, message: CREDENTIAL_HTTPS_REQUIRED }, 400);
+     }
+     if (!secretsEnabled()) {
+@@ -487,7 +489,7 @@ export function connectorRoutes(
+   });
+ 
+   app.post('/connectors/microblog/clipping-posts/:document/recreate', async (c) => {
+-    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost)) return c.json({ message: CREDENTIAL_HTTPS_REQUIRED }, 400);
++    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost, allowInsecureHttp)) return c.json({ message: CREDENTIAL_HTTPS_REQUIRED }, 400);
+     const document = c.req.param('document');
+     if (!isValidDocument(document)) return c.json({ message: 'Invalid book' }, 400);
+     const body = await c.req.json().catch(() => null) as { target?: unknown } | null;
+@@ -498,7 +500,7 @@ export function connectorRoutes(
+   });
+ 
+   app.put('/connectors/microblog/destination', async (c) => {
+-    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost)) return c.json({ message: CREDENTIAL_HTTPS_REQUIRED }, 400);
++    if (!credentialRequestIsSecure(c, trustProxy, allowHttpLocalhost, allowInsecureHttp)) return c.json({ message: CREDENTIAL_HTTPS_REQUIRED }, 400);
+     const userId = c.get('user').id;
+     const account = getAccount(db, userId, 'microblog');
+     if (!account?.enabled) return c.json({ message: 'Micro.blog is not linked or enabled' }, 400);
 diff --git a/src/routes/v1/progress.ts b/src/routes/v1/progress.ts
 index 644432a..bf3e5d6 100644
 --- a/src/routes/v1/progress.ts
@@ -473,10 +851,97 @@ index 644432a..bf3e5d6 100644
      autoPause(db, { userId: user.id, document: canonical });
      const rows = db
 diff --git a/test/connectors.test.ts b/test/connectors.test.ts
-index 6058fd0..527c480 100644
+index 6058fd0..705b268 100644
 --- a/test/connectors.test.ts
 +++ b/test/connectors.test.ts
-@@ -77,7 +77,7 @@ describe('connector management API', () => {
+@@ -6,6 +6,7 @@ import { drainQueue } from '../src/connectors/runner.js';
+ import { claimReady, enqueue, markFailed } from '../src/connectors/queue.js';
+ import { saveMatch, upsertAccount } from '../src/connectors/store.js';
+ import { fromEnv } from '../src/config.js';
++import { createApp } from '../src/app.js';
+ 
+ // A programmable fake transport. Records requests; returns queued responses by
+ // URL substring match.
+@@ -47,6 +48,78 @@ afterEach(() => {
+   resetEncryptionKeyCache();
+ });
+ 
++describe('passwordless hosted web access', () => {
++  const origin = 'http://sync.test';
++  const webHeaders = { 'x-crosspoint-web': '1' };
++
++  it('is disabled by default and never makes the device API anonymous', async () => {
++    const { app, db } = makeTestApp();
++    try {
++      expect(await (await app.request('/auth/web-access', { headers: webHeaders })).json()).toEqual({ enabled: false });
++      expect((await app.request('/api/v1/connectors', { headers: webHeaders })).status).toBe(401);
++    } finally { db.close(); }
++  });
++
++  it('requires an exact origin configuration', () => {
++    expect(() => makeTestApp({ webAuthUser: 'reader' })).toThrow('WEB_AUTH_ORIGIN');
++    expect(() => makeTestApp({ webAuthUser: 'reader', webAuthOrigin: origin + '/' })).toThrow('WEB_AUTH_ORIGIN');
++  });
++
++  it('uses only the configured existing user, including LAN HTTP without Fetch Metadata', async () => {
++    const { app, db } = makeTestApp({ webAuthUser: 'lan-reader', webAuthOrigin: origin });
++    try {
++      const { username, headers } = await registerUser(app);
++      db.prepare('UPDATE users SET username = ? WHERE username = ?').run('lan-reader', username);
++      const status = await app.request(origin + '/auth/web-access', { headers: webHeaders });
++      expect(await status.json()).toEqual({ enabled: true, username: 'lan-reader' });
++      expect(status.headers.get('cache-control')).toBe('no-store');
++      expect((await app.request(origin + '/api/v1/connectors', { headers: webHeaders })).status).toBe(200);
++      expect((await app.request(origin + '/api/v1/connectors')).status).toBe(401);
++      expect((await app.request('/users/auth')).status).toBe(401);
++      expect((await app.request(origin + '/api/v1/connectors', {
++        headers: { ...webHeaders, 'x-auth-user': 'lan-reader', 'x-auth-key': 'wrong' },
++      })).status).toBe(401);
++      expect((await app.request(origin + '/api/v1/connectors', {
++        headers: { ...headers, 'x-auth-user': 'lan-reader' },
++      })).status).toBe(200);
++      const write = await app.request(origin + '/api/v1/account/reading-goals/2026', {
++        method: 'PUT', headers: { ...webHeaders, origin, 'content-type': 'application/json' },
++        body: JSON.stringify({ target: 12 }),
++      });
++      expect(write.status).toBe(200);
++      const protectedApp = createApp(db, fromEnv({}));
++      expect((await protectedApp.request(origin + '/api/v1/connectors', { headers: webHeaders })).status).toBe(401);
++      expect((await protectedApp.request(origin + '/api/v1/connectors', {
++        headers: { ...headers, 'x-auth-user': 'lan-reader' },
++      })).status).toBe(200);
++    } finally { db.close(); }
++  });
++
++  it('rejects unknown users instead of selecting another account', async () => {
++    const { app, db } = makeTestApp({ webAuthUser: 'missing', webAuthOrigin: origin });
++    try {
++      await registerUser(app);
++      const res = await app.request(origin + '/auth/web-access', { headers: webHeaders });
++      expect(res.status).toBe(409);
++      expect((await res.json()).message).toContain('does not exist');
++    } finally { db.close(); }
++  });
++
++  it.each([
++    { host: origin, extra: { origin: 'http://evil.test' }, method: 'GET' },
++    { host: origin, extra: { 'sec-fetch-site': 'cross-site' }, method: 'GET' },
++    { host: 'http://evil.test', extra: {}, method: 'GET' },
++    { host: origin, extra: {}, method: 'PUT' },
++  ])('rejects cross-origin, rebound-host and unproven writes: %j', async ({ host, extra, method }) => {
++    const { app, db } = makeTestApp({ webAuthUser: 'reader', webAuthOrigin: origin });
++    try {
++      expect((await app.request(host + '/api/v1/connectors', {
++        method, headers: { ...webHeaders, ...extra },
++      })).status).toBe(403);
++    } finally { db.close(); }
++  });
++});
++
+ describe('connector management API', () => {
+   it('exposes saved delivery failures only to the account that owns them', async () => {
+     const { app, db } = makeTestApp();
+@@ -77,7 +150,7 @@ describe('connector management API', () => {
      const ids = body.connectors.map((c: { id: string }) => c.id).sort();
      // The classic (highlights-only) readwise connector is hidden; still
      // registered but not listed. Kindle is stealth: hidden until revealed.
@@ -485,6 +950,17 @@ index 6058fd0..527c480 100644
      expect(body.connectors.every((c: { linked: boolean }) => !c.linked)).toBe(true);
    });
  
+@@ -219,6 +292,10 @@ describe('connector management API', () => {
+     { name: 'trusted HTTPS proxy', env: { TRUST_PROXY: 'true' }, protocol: 'http', forwarded: 'https', status: 200 },
+     { name: 'trusted proxy serving HTTP', env: { TRUST_PROXY: 'true' }, protocol: 'http', forwarded: 'http', status: 400 },
+     { name: 'direct HTTPS', env: {}, protocol: 'https', forwarded: '', status: 200 },
++    { name: 'explicit insecure HTTP opt-in', env: { ALLOW_INSECURE_HTTP: '1' }, protocol: 'http', forwarded: '', status: 200 },
++    { name: 'explicit insecure HTTP true', env: { ALLOW_INSECURE_HTTP: 'true' }, protocol: 'http', forwarded: '', status: 200 },
++    { name: 'disabled insecure HTTP', env: { ALLOW_INSECURE_HTTP: '0' }, protocol: 'http', forwarded: '', status: 400 },
++    { name: 'invalid insecure HTTP option', env: { ALLOW_INSECURE_HTTP: 'yes' }, protocol: 'http', forwarded: '', status: 400 },
+   ])('links BookOrbit securely with $name', async ({ env, protocol, forwarded, status }) => {
+     const fake = fakeTransport();
+     fake.on('/auth/login', 200, { accessToken: 'orbit-token' });
 diff --git a/test/tolino.test.ts b/test/tolino.test.ts
 new file mode 100644
 index 0000000..6ba8a62

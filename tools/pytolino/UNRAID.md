@@ -144,6 +144,10 @@ Add each row as a **Variable**, using the key exactly as shown:
 | `SYNC_STORAGE_KEY_FILE` | `/config/secrets/sync-storage-key` |
 | `HELPER_SYNC_WRITES` | `0` initially; `1` only after explicit setup |
 | `SYNC_ALLOW_HTTP_LOCALHOST` | `1` for the default loopback exception; **does not authorize LAN HTTP credentials** |
+| `SYNC_ALLOW_INSECURE_HTTP` | `0` by default; optional `1` explicitly permits unencrypted connector credentials on a trusted LAN |
+| `ALLINONE_DISABLE_WEB_AUTH` | `0` by default; optional `1` removes dashboard, noVNC and hosted Sync app login; trusted isolated LAN only |
+| `SYNC_WEB_AUTH_USER` | Required when disabling web auth: exact username of an existing Sync account to open automatically |
+| `SYNC_WEB_AUTH_ORIGIN` | Required when disabling web auth: exact Sync origin, e.g. `http://192.168.8.3:18082` (no path or trailing slash) |
 | `SYNC_TRUST_PROXY` | `0`; use `1` only behind an isolated trusted TLS proxy |
 | `SYNC_REGISTRATION_DISABLED` | `0` for first account creation; change to `1` afterward |
 | `SYNC_BASE_PATH` | Empty; use a prefix only with matching proxy/client configuration |
@@ -187,8 +191,8 @@ a child exits or health checks repeatedly fail; Docker restarts the container.
    Download individual books or use **Alle fehlenden EPUBs laden**
    ("Download all missing EPUBs"). Supported EPUBs download to the reader,
    not the Unraid server. DRM/ACSM/PDF are not supported or decrypted.
-6. Configure a trusted HTTPS endpoint for Sync before sending account
-   credentials over the LAN (see the next section). Open its `/app/`,
+6. Configure a trusted HTTPS endpoint for Sync, or explicitly accept trusted-LAN
+   HTTP using `SYNC_ALLOW_INSECURE_HTTP=1` (see the next section). Open its `/app/`,
    create a Sync account, then connect **Tolino / Thalia (local helper)**
    in Settings with the helper API key. The server is already included
    in this container; do not install a second Sync container.
@@ -221,6 +225,14 @@ VNC's password is not encryption. Use HTTPS/WSS or a VPN for untrusted networks.
 
 The Sync server's HTTP-localhost credential exception is **loopback only**.
 Do not assume `SYNC_ALLOW_HTTP_LOCALHOST=1` makes plain LAN HTTP login work.
+For a deliberately trusted-LAN-only deployment, you may instead set
+`SYNC_ALLOW_INSECURE_HTTP=1` and recreate the container. This explicitly
+permits connector credential submission over HTTP without trusting proxy
+headers. Keep `SYNC_TRUST_PROXY=0` when no proxy is used. Your API keys,
+credentials and traffic can be intercepted or modified on that network.
+Never enable this on an Internet-facing or untrusted network; HTTPS remains
+the default and recommended configuration. Set the option back to `0` to
+restore the HTTPS requirement.
 Use a trusted HTTPS reverse proxy for a physical reader. Forward Sync to
 container port 8082 and preserve Host. Set `SYNC_TRUST_PROXY=1` only if clients
 cannot bypass that proxy to reach Sync directly; remove/restrict the direct
@@ -231,6 +243,31 @@ and `HELPER_PUBLIC_URL` to their actual external HTTPS origins. Forward Host
 unchanged and support WebSockets for noVNC. The browser endpoint requires its
 own root site, not a path prefix. The plugin API and Sync endpoints remain
 separate even though both run in the same container.
+
+### Optional passwordless web access (trusted isolated LAN only)
+
+After creating your Sync account with normal authentication, set:
+
+```text
+ALLINONE_DISABLE_WEB_AUTH=1
+SYNC_WEB_AUTH_USER=your-existing-sync-username
+SYNC_WEB_AUTH_ORIGIN=http://192.168.8.3:18082
+```
+
+Use your actual browser-visible Sync origin. Recreate/update the container.
+This opens the dashboard and noVNC without passwords and automatically opens
+the selected account at Sync's `/app/`. Anyone with network access can now
+control the browser, cloud login, library and Sync data (including deletion).
+Do not expose these ports outside an isolated trusted LAN. Exact Host/Origin
+checks remain enabled; cross-origin passwordless access is rejected.
+Provider/Thalia login, reader Sync passwords, helper API keys and storage
+encryption keys are **not** disabled. Existing password files may stay mounted;
+Compose still requires its five secret files. No device keys are exposed to
+the passwordless app, and switching the option back to `0` restores web
+authentication immediately, including for previously opened passwordless tabs.
+Signing out does not protect a server configured for passwordless access.
+`SYNC_ALLOW_INSECURE_HTTP` is independent and still needed for HTTP connector
+credential submission.
 
 ## 5. Checks, updates and recovery
 

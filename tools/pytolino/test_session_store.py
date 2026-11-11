@@ -296,6 +296,42 @@ class PersistenceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 create_server(0)
 
+    def test_explicit_passwordless_admin_keeps_host_and_origin_checks(self):
+        environment = {"ALLINONE_DISABLE_WEB_AUTH": "1",
+                       "HELPER_ADMIN_ORIGIN": "http://unraid.test:8080",
+                       "HELPER_BROWSER_ORIGIN": "http://unraid.test:6080",
+                       "HELPER_ADMIN_PASSWORD_FILE": "/nonexistent-password",
+                       "HELPER_VNC_PASSWORD_FILE": "/nonexistent-vnc-password"}
+        with patch.dict(os.environ, environment), create_server(0) as server:
+            worker = threading.Thread(target=server.serve_forever)
+            worker.start()
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+            try:
+                headers = {"Host": "unraid.test:8080"}
+                connection.request("GET", "/", headers=headers)
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                headers["Cookie"] = response.getheader("Set-Cookie").split(";")[0]
+                response.read()
+                connection.request("GET", "/", headers={"Host": "evil.test"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 403)
+                response.read()
+                headers.update({"Origin": "http://evil.test", "Content-Type": "application/json"})
+                connection.request("POST", "/forget", "{}", headers)
+                response = connection.getresponse()
+                self.assertEqual(response.status, 403)
+                response.read()
+                headers["Origin"] = "http://unraid.test:8080"
+                connection.request("POST", "/forget", "{}", headers)
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                response.read()
+            finally:
+                connection.close()
+                server.shutdown()
+                worker.join()
+
 
 if __name__ == "__main__":
     unittest.main()

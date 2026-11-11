@@ -19,6 +19,13 @@ SYNC_BIND_ADDRESS=127.0.0.1
 # Keep cloud progress writes off until explicitly configured in both services.
 HELPER_SYNC_WRITES=0
 SYNC_ALLOW_HTTP_LOCALHOST=1
+# Explicit risk acceptance: unencrypted connector credentials on trusted LAN only.
+SYNC_ALLOW_INSECURE_HTTP=0
+# Trusted isolated LAN only: exposes dashboard, browser and this existing Sync user.
+# Keep API keys and storage keys; cloud/provider login is still required.
+ALLINONE_DISABLE_WEB_AUTH=0
+SYNC_WEB_AUTH_USER=
+SYNC_WEB_AUTH_ORIGIN=
 SYNC_TRUST_PROXY=0
 SYNC_REGISTRATION_DISABLED=0
 SYNC_BASE_PATH=

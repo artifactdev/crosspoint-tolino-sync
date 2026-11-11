@@ -62,6 +62,20 @@ the helper dashboard, or unencrypted credential APIs to the Internet.
 Disable new sync-account registration after setup with
 `SYNC_REGISTRATION_DISABLED=1`.
 
+For an explicitly trusted-LAN-only installation, `SYNC_ALLOW_INSECURE_HTTP=1`
+permits connector credential submission without HTTPS after recreation.
+The default is `0`. Credentials/API keys and traffic are then unencrypted;
+never enable it on an untrusted or Internet-facing network. This option is
+independent of `SYNC_TRUST_PROXY`, which should remain `0` without a proxy.
+For a standalone Node server, the corresponding variable is `ALLOW_INSECURE_HTTP`.
+
+The combined container also supports optional passwordless dashboard/noVNC
+and hosted Sync app access. See the [deployment guide](../pytolino/DEPLOYMENT.md#optional-passwordless-web-access)
+for the explicit trusted-LAN switch and existing-user/origin configuration.
+For a standalone patched Sync server, `WEB_AUTH_USER` and `WEB_AUTH_ORIGIN`
+enable only the hosted `/app/` passwordless mode; device authentication remains
+required. Legacy token/account login pages retain their normal authentication.
+
 ## Register downloaded books before the first sync
 
 This prevents a first upload from replacing an existing cloud position with the

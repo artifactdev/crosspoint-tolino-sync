@@ -29,6 +29,13 @@
     },
     "dest_dir": "/Books/Tolino",
     "filename": "{title}.epub",
+    "skip_existing": true,
+    "identity_key": "tolino_id",
+    "bulk": {
+      "url": "{cfg.helperUrl}/api/catalog?supported=1",
+      "title": "Alle fehlenden EPUBs laden",
+      "notice": "Alle unterstuetzten EPUBs laden. Vorhandene Buecher werden anhand ihrer Tolino-ID uebersprungen; DRM-Buecher sind ausgeschlossen. Lesestaende werden nicht automatisch angewendet. Zurueck bricht ab."
+    },
     "sidecar": {"path": "{dest}.meta.json", "body": "{url}"}
   }
 }

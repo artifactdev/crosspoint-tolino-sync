@@ -338,7 +338,7 @@ class Companion:
             self.reading_version += 1
             return {"synced": True, "unchanged": False, "revision": verified["revision"]}
 
-    def catalog(self):
+    def catalog(self, supported_only=False):
         inventory = self.inventory()["PublicationInventory"]
         positions = self.reading_progress()["positions"]
         books = {}
@@ -355,6 +355,8 @@ class Companion:
                 raise APIError(502, "Catalog entry has invalid authors.")
             author = ", ".join(item["name"] for item in authors if isinstance(item.get("name"), str))
             supported = epub_supported(book)
+            if supported_only and not supported:
+                continue
             position = positions.get(publication)
             progress = (f"Cloud reading progress: {position['progress'] * 100:.0f}%."
                         if position is not None else "No cloud reading position available.")
@@ -509,9 +511,9 @@ def create_api_server(companion, port=8081):
                             or self.headers.get("X-Tolino-Transport-Accepted") != "true"):
                         raise APIError(400, "Save helper mode and accept transport/storage warnings in browser settings first.")
                     if url.path == "/api/catalog":
-                        if query:
-                            raise APIError(400, "Native catalog does not accept query parameters.")
-                        return self.answer(200, companion.catalog())
+                        if query not in ({}, {"supported": ["1"]}):
+                            raise APIError(400, "Native catalog only accepts supported=1.")
+                        return self.answer(200, companion.catalog(supported_only=bool(query)))
                 if self.command == "POST" and url.path == "/api/reading-state" and not query:
                     length = int(self.headers.get("Content-Length", "0"))
                     if not 0 < length <= 8192 or self.headers.get("Content-Type") != "application/json":

@@ -1,0 +1,95 @@
+name: Xteink X4 Pro firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Original CrossPoint ref; patch incompatibilities fail the build"
+        required: true
+        default: "42d58daaabcf469a2e5e1ba871714fb9dcf51d29"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/firmware-x4pro.yml"
+      - "tools/firmware/**"
+      - "plugins/tolino-sync/**"
+  pull_request:
+    paths:
+      - ".github/workflows/firmware-x4pro.yml"
+      - "tools/firmware/**"
+      - "plugins/tolino-sync/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: x4pro-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: bridge
+      - name: Select original source
+        id: source
+        env:
+          REQUESTED_REF: ${{ inputs.upstream_ref }}
+        run: |
+          ref="${REQUESTED_REF:-$(cat bridge/tools/firmware/upstream-revision)}"
+          printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: crosspoint-reader/crosspoint-reader
+          ref: ${{ steps.source.outputs.ref }}
+          submodules: recursive
+          path: firmware
+      - name: Apply generic catalog patch
+        run: |
+          git -C firmware apply --check ../bridge/tools/firmware/native-bulk.patch
+          git -C firmware apply ../bridge/tools/firmware/native-bulk.patch
+      - name: Build X4 Pro toolchain image
+        run: docker build -t tolino-firmware-builder bridge/tools/firmware
+      - name: Compile Xteink X4 Pro
+        run: |
+          docker run --rm \
+            -v "$PWD/firmware:/firmware" \
+            tolino-firmware-builder \
+            sh -ec 'pio pkg install -e x4pro-gh_release
+            if [ -x /root/.platformio/penv/bin/python ]; then
+              /root/.platformio/penv/bin/python -m pip install pioarduino==6.1.19
+            fi
+            pio run -e x4pro-gh_release -j 2'
+      - name: Package firmware and SD plugin
+        run: |
+          mkdir artifacts
+          cp firmware/.pio/build/x4pro-gh_release/firmware.bin artifacts/crosspoint-tolino-x4pro.bin
+          cd bridge
+          npm run package
+          cp dist/tolino-sync-*.zip ../artifacts/
+          cp tools/firmware/native-bulk.patch ../artifacts/
+          cd ..
+          printf 'Original CrossPoint: %s\nBridge: %s\nTarget: x4pro-gh_release (ESP32-S3)\n' \
+            "$(git -C firmware rev-parse HEAD)" "$(git -C bridge rev-parse HEAD)" > artifacts/build-info.txt
+          cd artifacts
+          sha256sum ./*.bin ./*.zip ./*.patch build-info.txt > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crosspoint-tolino-x4pro
+          path: artifacts/*
+          if-no-files-found: error
+      - name: Publish downloadable prerelease
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: tolino-x4pro-${{ github.run_number }}-${{ github.run_attempt }}
+        run: |
+          gh release create "$RELEASE_TAG" artifacts/* --prerelease \
+            --title "CrossPoint Tolino - X4 Pro build $GITHUB_RUN_NUMBER" \
+            --notes "Custom firmware based on original CrossPoint. Xteink X4 Pro only, not X3/X4/X4C. Includes native missing-book downloads and identity-based duplicate protection. No DRM removal; self-builds do not include upstream LCP release credentials. Back up the SD card and follow upstream update instructions. See build-info.txt and SHA256SUMS."
+    permissions:
+      contents: write

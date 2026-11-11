@@ -68,7 +68,10 @@ class CompanionTests(unittest.TestCase):
                 patch.object(helper, "reading_progress", return_value={
                     "positions": {"publication-test": {"progress": 0}}}):
             books = helper.catalog()["books"]
+            supported_books = helper.catalog(supported_only=True)["books"]
         self.assertEqual(len(books), 2)
+        self.assertEqual(len(supported_books), 1)
+        self.assertEqual(supported_books[0]["id"], native_id(identifier))
         book = next(book for book in books if book["id"] == native_id(identifier))
         self.assertEqual(len(book["id"]), 64)
         self.assertEqual(json.loads(book["sidecar"]), {
@@ -371,11 +374,17 @@ class CompanionTests(unittest.TestCase):
                     response = connection.getresponse()
                     self.assertEqual(response.status, 400)
                     response.read()
-                with patch.object(helper, "catalog", return_value={"books": []}):
+                with patch.object(helper, "catalog", return_value={"books": []}) as catalog:
                     connection.request("GET", "/api/catalog", headers=native_headers)
                     response = connection.getresponse()
                     self.assertEqual(response.status, 200)
                     self.assertEqual(json.loads(response.read()), {"books": []})
+                    catalog.assert_called_once_with(supported_only=False)
+                    connection.request("GET", "/api/catalog?supported=1", headers=native_headers)
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(json.loads(response.read()), {"books": []})
+                    catalog.assert_called_with(supported_only=True)
                     connection.request("GET", "/api/catalog?url=anything", headers=native_headers)
                     response = connection.getresponse()
                     self.assertEqual(response.status, 400)

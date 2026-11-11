@@ -181,6 +181,9 @@ test("native device catalog shares browser connection settings and authenticates
     assert.equal(request.headers["X-Tolino-Transport-Accepted"], "{cfg.nativeTransportAccepted}");
   }
   assert.equal(manifest.download.filename, "{title}.epub");
+  assert.equal(manifest.download.skip_existing, true);
+  assert.equal(manifest.download.identity_key, "tolino_id");
+  assert.equal(manifest.download.bulk.url, "{cfg.helperUrl}/api/catalog?supported=1");
   assert.deepEqual(manifest.download.sidecar, {path: "{dest}.meta.json", body: "{url}"});
 });
 

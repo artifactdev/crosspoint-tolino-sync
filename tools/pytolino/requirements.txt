@@ -1,0 +1,2 @@
+pytolino==3.6
+cryptography==50.0.2

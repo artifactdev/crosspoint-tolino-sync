@@ -1,0 +1,39 @@
+services:
+  helper:
+    container_name: crosspoint-pytolino-login
+    image: crosspoint-pytolino-login:local
+    build:
+      context: .
+      dockerfile: Dockerfile.login
+    init: true
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:6080:6080"
+      - "${HELPER_BIND_ADDRESS:-127.0.0.1}:8081:8081"
+    environment:
+      HELPER_PUBLIC_URL: "${HELPER_PUBLIC_URL:-http://YOUR-DOCKER-HOST:8081}"
+      HELPER_API_KEY_FILE: /run/secrets/helper_api_key
+      HELPER_DATA_DIR: /data
+      HELPER_STORAGE_KEY_FILE: /run/secrets/storage_key
+      HELPER_SYNC_WRITES: "${HELPER_SYNC_WRITES:-0}"
+    secrets:
+      - helper_api_key
+      - storage_key
+    volumes:
+      - helper_data:/data
+    tmpfs:
+      - /tmp:rw,nosuid,size=1g
+    shm_size: 512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  helper_api_key:
+    file: "${HELPER_API_KEY_PATH:?Set HELPER_API_KEY_PATH to a local API key file outside the repository}"
+  storage_key:
+    file: "${HELPER_STORAGE_KEY_PATH:?Set HELPER_STORAGE_KEY_PATH to a Fernet key file outside the data directory}"
+
+volumes:
+  helper_data:

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tolino Bridge · Bibliothek</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/display.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/">t<span>·</span>b <small>TOLINO BRIDGE</small></a><span class="local">LOKALER COMPANION</span></header>
+  <main>
+    <section class="intro"><div><p class="eyebrow">DEINE GESCHICHTEN. DEIN READER.</p><h1>Ein Zuhause für<br>deine Bibliothek<span>.</span></h1><p class="muted">Thalia verbinden. Bücher entdecken. Auf CrossPoint weiterlesen.</p></div><div class="book-art" aria-hidden="true"><i></i><i></i><i></i><span>Ein neues<br>Kapitel.</span></div></section>
+    <div class="stats"><article><span>BIBLIOTHEK</span><strong id="count">0</strong><small>Bücher in deiner Cloud</small></article><article><span>VERBINDUNG</span><strong id="connection-state">Offline</strong><small>Tokens bleiben beim Helfer</small></article><article><span>CROSSPOINT</span><strong>Bereit für dich</strong><small>EPUBs &amp; Cloud-Lesestände</small></article></div>
+    <section class="panel connect">
+      <div><p class="eyebrow">01 / VERBINDEN</p><h2>Dein Thalia-Konto</h2><p class="muted">Kein Token-Kopieren. Bei Rückfragen einfach den sicheren Anbieter-Login im Container öffnen.</p></div>
+      <form id="login"><label>E-Mail<input id="username" type="email" required autocomplete="username" placeholder="name@beispiel.de"></label><label>Passwort<input id="password" type="password" required autocomplete="current-password" placeholder="Dein Thalia-Passwort"></label><button id="submit" class="primary">Anmelden &amp; laden <span>→</span></button></form>
+      <label class="remember"><input id="remember-credentials" type="checkbox" disabled> Zusätzlich Zugangsdaten verschlüsselt speichern, um nach widerrufener Sitzung einmal automatisch neu anzumelden.</label>
+      <p id="persistence-status" class="fineprint" role="status">Sitzungsspeicher wird geprüft …</p>
+      <div class="connection-actions"><a id="browser-link" class="text-link" href="http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale" target="_blank" rel="noreferrer">Browser im Container öffnen ↗</a><button id="reload" class="secondary">Bibliothek aktualisieren</button><button id="forget" class="secondary">Gespeicherte Anmeldung löschen</button></div>
+      <p id="status" role="status" class="notice">Verbindung wird geprüft …</p>
+      <p class="fineprint">Deutschland und Thalia.de werden automatisch gewählt; Sicherheitsabfragen müssen gegebenenfalls im Browser bestätigt werden. Sitzungstokens werden bei konfiguriertem Speicher verschlüsselt gesichert und automatisch erneuert. Passwortspeicherung nur mit deiner Zustimmung; Administratoren mit Speicherschlüssel können die Daten entschlüsseln. Lokales Löschen widerruft keine Sitzung bei Thalia.</p>
+    </section>
+    <section class="panel library"><div class="section-head"><div><p class="eyebrow">02 / ENTDECKEN</p><h2>Deine Bücher <span id="visible-count" class="badge">0</span></h2></div><label class="search">Suchen<input id="search" type="search" placeholder="Titel, Autor, ISBN oder Metadaten …"></label></div>
+      <p class="muted">Alle gelieferten Publikationsdaten im Detail. Sortieren über die Spaltenüberschriften.</p>
+      <button id="refresh-progress" class="secondary" disabled>Cloud-Lesestand aktualisieren</button>
+      <p id="reading-status" class="fineprint" role="status">Cloud-Lesestände werden nach der Anmeldung automatisch abgerufen. Nur lesend, keine Übertragung zu Thalia.</p>
+      <div class="table-wrap"><table><thead><tr><th>Cover</th><th><button data-sort="title">Titel ↕</button></th><th><button data-sort="author">Autor:in ↕</button></th><th>Cloud-Lesefortschritt</th><th><button data-sort="publisher">Verlag ↕</button></th><th><button data-sort="issued">Erschienen ↕</button></th><th>Sprache</th><th>Format / Schutz</th><th>Details / Download</th></tr></thead><tbody id="books"></tbody></table></div>
+      <div id="empty" class="empty"><span>▤</span><h3>Dein nächstes Kapitel wartet.</h3><p>Melde dich an, um deine Cloud-Bibliothek zu laden.</p></div>
+    </section>
+    <section class="panel api"><div><p class="eyebrow">03 / MITNEHMEN</p><h2>Mit CrossPoint verbinden</h2><p class="muted">Im Plugin „Docker helper“ wählen. URL des Docker-Rechners und API-Schlüssel eintragen. Bibliothek, EPUB-Downloads und lesende Cloud-Lesestände laufen dann über diesen Helfer.</p></div><div class="api-fields"><label>Helper-URL<input id="helper-url" readonly></label><label>API-Schlüssel<input id="api-key" type="password" readonly autocomplete="off"></label><button id="show-key" class="secondary">Schlüssel anzeigen</button></div><p class="fineprint">Admin und Browser bleiben lokal. Nur API-Port 8081 im vertrauenswürdigen Heimnetz freigeben. HTTP überträgt den API-Schlüssel unverschlüsselt; für andere Netze HTTPS mit Reverse-Proxy verwenden. Keine Fortschrittsänderungen oder DRM-Umgehung.</p></section>
+    <footer>TOLINO BRIDGE <span>Deine Bibliothek. Ohne Umwege.</span></footer>
+  </main>
+</body>
+</html>

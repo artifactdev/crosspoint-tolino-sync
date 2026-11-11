@@ -1,0 +1,723 @@
+diff --git a/app/src/Settings.jsx b/app/src/Settings.jsx
+index a7298ea..3db904c 100644
+--- a/app/src/Settings.jsx
++++ b/app/src/Settings.jsx
+@@ -47,6 +47,7 @@ const HINTS = {
+   'readwise-reader': 'Archives books in Reader when you finish them, and brings your Reader progress back.',
+   kosync: 'Mirrors your reading progress to another KOReader-compatible (KOSync) server. For Calibre-Web, use your library URL ending in /kosync.',
+   bookfusion: 'Syncs reading progress with BookFusion. You approve the request on bookfusion.com.',
++  tolino: 'Exact reading positions through your local Tolino Bridge. Enter its API key. The server operator sets TOLINO_HELPER_URL. Use binary document matching and register the downloaded book sidecar first. Cloud writes require explicit opt-in.',
+   audiobookshelf: 'Keeps your place between the ebook and the audiobook. Create an API key in Audiobookshelf under Settings, Users, API Keys.',
+   jellyfin: 'Syncs reading progress with your Jellyfin book library (Jellyfin 12.0 or newer). Sign in with your Jellyfin username and password.',
+   bookorbit: 'Syncs progress both ways, adds clippings as highlights, and exchanges reading sessions for matched books. Imports BookOrbit history and exports sessions recorded by newer CrossInk firmware. Includes other BookOrbit reader history alongside your device stats. Repeated sessions are counted once.',
+diff --git a/src/connectors/bookfusion-epub.ts b/src/connectors/bookfusion-epub.ts
+index 6cce9ce..3c9732c 100644
+--- a/src/connectors/bookfusion-epub.ts
++++ b/src/connectors/bookfusion-epub.ts
+@@ -240,18 +240,19 @@ export interface BookFusionPosition {
+   cfi: string;
+ }
+ 
+-interface Chapter {
++export interface Chapter {
+   opf: Element;
+   spine: Element;
+   spineItems: Element[];
+   index: number;
+   html: Element;
+   body: Element;
++  path: string;
+ }
+ 
+-async function withChapter<T>(
++export async function withChapter<T>(
+   epub: Epub,
+-  select: (opf: Element, spine: Element, items: Element[]) => number,
++  select: (opf: Element, spine: Element, items: Element[], opfPath: string) => number,
+   resolve: (chapter: Chapter) => T
+ ): Promise<T> {
+   const book = epub instanceof Map ? epub : await textEntries(epub);
+@@ -268,7 +269,7 @@ async function withChapter<T>(
+   const opf = xml(read(opfPath));
+   const spine = child(opf, 'spine');
+   const spineItems = elements(spine).filter(e => e.localName === 'itemref');
+-  const index = select(opf, spine, spineItems);
++  const index = select(opf, spine, spineItems, opfPath);
+   if (!Number.isSafeInteger(index) || index < 0 || index >= spineItems.length) invalid('chapter out of range');
+   const item = elements(child(opf, 'manifest')).find(
+     e => e.localName === 'item' && e.getAttribute('id') === spineItems[index].getAttribute('idref')
+@@ -277,7 +278,7 @@ async function withChapter<T>(
+   const chapterPath = posix.join(posix.dirname(opfPath), decodeURIComponent(href.split('#')[0]));
+   const html = xml(read(chapterPath), true);
+   const body = child(html, 'body');
+-  return resolve({ opf, spine, spineItems, index, html, body });
++  return resolve({ opf, spine, spineItems, index, html, body, path: chapterPath });
+ }
+ 
+ /** Resolve the device's XPath in the actual EPUB, including absolute sibling indices. */
+diff --git a/src/connectors/fanin.ts b/src/connectors/fanin.ts
+index ee8c0e9..0113d71 100644
+--- a/src/connectors/fanin.ts
++++ b/src/connectors/fanin.ts
+@@ -53,8 +53,10 @@ export async function pollConnector(
+   function apply(ch: InboundChange, document: string): number {
+     const exact = ch.progress !== undefined;
+     const current = latestProgress(db, userId, document);
+-    const dated = exact || connectorId === 'bookorbit';
+-    const updatedAt = dated ? Math.floor(ch.updatedAtMs / 1000) : nowSeconds();
++    const dated = (exact && connectorId !== 'tolino') || connectorId === 'bookorbit';
++    // Tolino can advance without changing modified. Order accepted advances by local observation time.
++    const updatedAt = connectorId === 'tolino' ? Math.max(nowSeconds(), (current?.updated_at ?? -1) + 1) :
++      dated ? Math.floor(ch.updatedAtMs / 1000) : nowSeconds();
+     if (dated && current && updatedAt <= current.updated_at) return 0;
+     const pct = exact ? ch.percentage : ch.finished || ch.percentage >= 0.999 ? 1 : ch.percentage;
+     // Furthest-read-only sources (Kindle FRL): apply only when ADVANCING the
+@@ -62,7 +64,9 @@ export async function pollConnector(
+     // behind when the user has read further anywhere — so this also covers
+     // undated annotations, which can't be ordered by timestamp at all.
+     if (ch.furthestReadOnly && current && pct <= current.percentage) return 0;
+-    const samePosition = current && Math.abs(current.percentage - pct) < (exact ? 0.000001 : ECHO_EPSILON) &&
++    const samePercentage = current && (connectorId === 'tolino' ? current.percentage === pct :
++      Math.abs(current.percentage - pct) < (exact ? 0.000001 : ECHO_EPSILON));
++    const samePosition = samePercentage &&
+       (!exact || current.progress.replace(/\[1\]/g, '') === ch.progress!.replace(/\[1\]/g, ''));
+     if (samePosition && !exact) return 0;
+     // Percentage-only providers use recorded samples; exact providers never borrow a stale page.
+@@ -209,12 +213,12 @@ function importHighlights(db: DB, userId: number, document: string, items: Inbou
+   }
+ }
+ 
+-/** Poll library-wide providers; per-book providers refresh on progress requests. */
++/** Poll library-wide providers and Tolino's sidecar-matched books. */
+ export async function pollAll(db: DB, http: HttpTransport = fetchTransport): Promise<number> {
+   let total = 0;
+   for (const { user_id, connector_id } of listAllEnabledAccounts(db)) {
+     const conn = getConnector(connector_id);
+-    if (!conn?.capabilities.read || !conn.pullChanges) continue;
++    if (!conn?.capabilities.read || (!conn.pullChanges && connector_id !== 'tolino')) continue;
+     total += await pollConnector(db, user_id, connector_id, http);
+   }
+   return total;
+diff --git a/src/connectors/refresh.ts b/src/connectors/refresh.ts
+index 614997f..fa6b76b 100644
+--- a/src/connectors/refresh.ts
++++ b/src/connectors/refresh.ts
+@@ -29,6 +29,7 @@ export type ProgressRefresh = (userId: number, document: string) => Promise<void
+  */
+ const PER_BOOK_PULLERS: { id: string; strict: boolean; sidecarOnly: boolean; matchOnDemand?: boolean }[] = [
+   { id: 'bookfusion', strict: true, sidecarOnly: true },
++  { id: 'tolino', strict: true, sidecarOnly: true },
+   { id: 'kindle', strict: false, sidecarOnly: false, matchOnDemand: true },
+   { id: 'bookorbit', strict: false, sidecarOnly: false, matchOnDemand: true },
+   { id: 'jellyfin', strict: false, sidecarOnly: false, matchOnDemand: true },
+diff --git a/src/connectors/registry.ts b/src/connectors/registry.ts
+index 7f8ea2b..84867b9 100644
+--- a/src/connectors/registry.ts
++++ b/src/connectors/registry.ts
+@@ -12,6 +12,7 @@ import { bookorbitConnector } from './bookorbit.js';
+ import { spotifyConnector } from './spotify.js';
+ import { seekquelConnector } from './seekquel.js';
+ import { readestConnector } from './readest.js';
++import { tolinoConnector } from './tolino.js';
+ 
+ let byId: Map<string, Connector> | undefined;
+ 
+@@ -30,6 +31,7 @@ function connectorRegistry(): Map<string, Connector> {
+       spotifyConnector,
+       seekquelConnector,
+       readestConnector,
++      tolinoConnector,
+       microblogConnector,
+       kindleConnector,
+     ];
+diff --git a/src/connectors/runner.ts b/src/connectors/runner.ts
+index 2b6c627..9086cb7 100644
+--- a/src/connectors/runner.ts
++++ b/src/connectors/runner.ts
+@@ -166,7 +166,7 @@ export async function processRow(db: DB, row: QueueRow, http: HttpTransport): Pr
+ 
+   const cred = decryptCredential(account, db);
+   try {
+-    const result = await connector.push(cred, match, ev, http, { db, userId: row.user_id });
++    const result = await connector.push(cred, match, ev, http, { db, userId: row.user_id, document: row.document });
+     if (!stillCurrent()) return;
+     if (result.ok) {
+       // Persist (or clear) the per-book condition so the review UI can show it.
+diff --git a/src/connectors/tolino-epub.ts b/src/connectors/tolino-epub.ts
+new file mode 100644
+index 0000000..d5fdd92
+--- /dev/null
++++ b/src/connectors/tolino-epub.ts
+@@ -0,0 +1,139 @@
++import { posix } from 'node:path';
++import type { Element, Node } from '@xmldom/xmldom';
++import { epubPosition, withChapter, type Epub } from './bookfusion-epub.js';
++import { ConnectorOperationError } from './types.js';
++
++function invalid(): never {
++  throw new ConnectorOperationError('Tolino position cannot be resolved exactly in the downloaded EPUB', false);
++}
++
++function children(node: Node): Node[] { return Array.from(node.childNodes ?? []); }
++function elements(node: Node): Element[] {
++  return children(node).filter((node): node is Element => node.nodeType === 1);
++}
++function isText(node: Node): boolean { return node.nodeType === 3 || node.nodeType === 4; }
++// RMSDK counts DOM siblings, including formatting whitespace and comments, but not processing instructions.
++function enumerable(node: Node): Node[] { return children(node).filter(node => node.nodeType !== 7); }
++function localName(node: Node): string { return (node as Element).localName ?? ''; }
++const HIDDEN = new Set(['head', 'style', 'script', 'title', 'rp']);
++
++function safePath(value: string): string {
++  let decoded: string;
++  try { decoded = decodeURIComponent(value); } catch { return invalid(); }
++  if (!decoded || decoded.startsWith('/') || decoded.includes('\\') || /[\u0000-\u001f?#]/.test(decoded)) invalid();
++  const normalized = posix.normalize(decoded);
++  if (normalized === '..' || normalized.startsWith('../')) invalid();
++  return normalized;
++}
++
++function fromBytes(value: string, offset: number): number {
++  if (!Number.isSafeInteger(offset) || offset < 0) invalid();
++  let bytes = 0, count = 0;
++  for (const character of value) {
++    if (bytes === offset) return count;
++    bytes += Buffer.byteLength(character);
++    count++;
++    if (bytes > offset) invalid();
++  }
++  return bytes === offset ? count : invalid();
++}
++
++function xpath(html: Element, body: Element, target: Node, index: number, offset: number): string {
++  const path: string[] = [];
++  let current = target;
++  for (; current !== body; current = current.parentNode ?? invalid()) {
++    if (current === html || (current.nodeType !== 1 && !isText(current))) invalid();
++    const parent = current.parentNode ?? invalid();
++    if (isText(current)) {
++      if (current !== target) invalid();
++      const siblings = children(parent).filter(isText);
++      path.unshift(`text()[${siblings.indexOf(current) + 1}].${offset}`);
++    } else {
++      if (HIDDEN.has(localName(current))) invalid();
++      const siblings = elements(parent).filter(node => localName(node) === localName(current));
++      path.unshift(`${localName(current)}[${siblings.indexOf(current as Element) + 1}]`);
++    }
++  }
++  return `/body/DocFragment[${index + 1}]/body` + (path.length ? '/' + path.join('/') : '');
++}
++
++/** RMSDK #point uses one-based DOM children and UTF-8 byte offsets, not CFI steps or percentages. */
++export async function tolinoXPath(epub: Epub, locator: string): Promise<string> {
++  const match = /^([^#]+)#point\(\/1((?:\/[1-9]\d*)+):(\d+)\)$/.exec(locator);
++  if (!match || locator.length > 4096) invalid();
++  const chapter = safePath(match[1]);
++  return withChapter(epub, (opf, _spine, items, opfPath) => {
++    const manifest = elements(opf).find(node => localName(node) === 'manifest') ?? invalid();
++    const found: number[] = [];
++    for (const [index, item] of items.entries()) {
++      const file = elements(manifest).find(node => node.getAttribute('id') === item.getAttribute('idref'));
++      if (!file) invalid();
++      const href = file.getAttribute('href')?.split('#')[0] ?? invalid();
++      const resolved = posix.normalize(posix.join(posix.dirname(opfPath), decodeURIComponent(href)));
++      const alias = posix.normalize(decodeURIComponent(href));
++      if (chapter === resolved || chapter === posix.basename(resolved) ||
++          (!alias.startsWith('../') && chapter === alias)) found.push(index);
++    }
++    return found.length === 1 ? found[0] : invalid();
++  }, ({ html, body, index }) => {
++    let node: Node = html;
++    for (const step of match[2].slice(1).split('/')) {
++      const number = Number(step);
++      if (!Number.isSafeInteger(number)) invalid();
++      node = enumerable(node)[number - 1] ?? invalid();
++    }
++    let offset = fromBytes(node.textContent ?? '', Number(match[3]));
++    if (node.nodeType === 1 && offset > 0) {
++      // Element offsets are measured over descendant text, not an estimated paragraph.
++      const root = node;
++      let found: Node | null = null;
++      for (let current: Node | null = root; current;) {
++        if (isText(current)) {
++          const length = Array.from(current.nodeValue ?? '').length;
++          if (offset <= length) { found = current; break; }
++          offset -= length;
++        }
++        if (current.firstChild) { current = current.firstChild; continue; }
++        while (current !== root && !current.nextSibling) current = current.parentNode!;
++        current = current === root ? null : current.nextSibling;
++      }
++      node = found ?? invalid();
++    }
++    return xpath(html, body, node, index, offset);
++  });
++}
++
++/** Resolve the actual XPath first; translate codepoints to UTF-8 bytes only at the selected text node. */
++export async function tolinoPoint(epub: Epub, progress: string): Promise<string> {
++  await epubPosition(epub, progress);
++  const match = /^\/body\/DocFragment(?:\[(\d+)\])?\/body(?:\/(.*))?$/.exec(progress) ?? invalid();
++  return withChapter(epub, () => Number(match[1] ?? 1) - 1, async ({ html, body, path }) => {
++    let node: Node = body;
++    let offset = 0;
++    for (const part of match[2]?.split('/') ?? []) {
++      const text = /^text\(\)(?:\[(\d+)\])?(?:\.(\d+))?$/.exec(part);
++      if (text) {
++        node = children(node).filter(isText)[Number(text[1] ?? 1) - 1] ?? invalid();
++        offset = Number(text[2] ?? 0);
++      } else {
++        const element = /^([\w:.-]+)(?:\[(\d+)\])?$/.exec(part) ?? invalid();
++        node = elements(node).filter(child => localName(child) === element[1].split(':').pop())[
++          Number(element[2] ?? 1) - 1] ?? invalid();
++        if (HIDDEN.has(localName(node))) invalid();
++      }
++    }
++    const value = Array.from(node.textContent ?? '');
++    if (!Number.isSafeInteger(offset) || offset > value.length) invalid();
++    const bytes = Buffer.byteLength(value.slice(0, offset).join(''));
++    const steps: number[] = [];
++    for (let current = node; current !== html; current = current.parentNode ?? invalid()) {
++      if (!current.parentNode) invalid();
++      steps.unshift(enumerable(current.parentNode).indexOf(current) + 1);
++    }
++    const locator = `${path.split('/').map(encodeURIComponent).join('/')}#point(/1/${steps.join('/')}:${bytes})`;
++    const roundtrip = await tolinoXPath(epub, locator);
++    // Both representations must anchor the same node; do not silently fall back to a percentage.
++    await epubPosition(epub, roundtrip);
++    return locator;
++  });
++}
+diff --git a/src/connectors/tolino.ts b/src/connectors/tolino.ts
+new file mode 100644
+index 0000000..5c375b9
+--- /dev/null
++++ b/src/connectors/tolino.ts
+@@ -0,0 +1,152 @@
++import { createHash } from 'node:crypto';
++import { cachedEpub } from './bookfusion-epub.js';
++import { tolinoPoint, tolinoXPath } from './tolino-epub.js';
++import { ConnectorOperationError, type Connector, type ConnectorContext, type Credential,
++  type HttpTransport, type Match } from './types.js';
++
++function failure(message: string, retryable = false): never {
++  throw new ConnectorOperationError(message, retryable);
++}
++
++function connection(credential: Credential) {
++  // An operator-configured destination, never a user-controlled server-side fetch URL.
++  const url = new URL(process.env.TOLINO_HELPER_URL ?? 'http://127.0.0.1:8081');
++  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
++      url.pathname !== '/' || url.search || url.hash) failure('Invalid TOLINO_HELPER_URL');
++  const token = credential.token;
++  if (typeof token !== 'string' || token.length < 32 || /[^\x21-\x7e]/.test(token)) {
++    failure('A valid Tolino helper API key is required');
++  }
++  return { origin: url.origin, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' } };
++}
++
++function check(status: number): void {
++  if (status >= 200 && status < 300) return;
++  throw new ConnectorOperationError(
++    `Tolino helper request failed (HTTP ${status})`, status === 429 || status >= 500, status === 401
++  );
++}
++
++interface Remote {
++  revision: string;
++  position: { progress: number; position: string; modified: number } | null;
++}
++
++async function remote(credential: Credential, id: string, http: HttpTransport): Promise<Remote> {
++  const { origin, headers } = connection(credential);
++  const res = await http(`${origin}/api/sync-position?id=${encodeURIComponent(id)}`, {
++    method: 'GET', headers, redirect: 'error', signal: AbortSignal.timeout(10_000),
++  });
++  check(res.status);
++  const data = await res.json() as Partial<Remote> | null;
++  if (!data || typeof data.revision !== 'string' || !data.revision) failure('Invalid Tolino cloud revision');
++  const p = data.position;
++  if (p !== null && (!p || typeof p.position !== 'string' || typeof p.progress !== 'number' ||
++      !Number.isFinite(p.progress) || p.progress < 0 || p.progress > 1 || typeof p.modified !== 'number' ||
++      !Number.isFinite(p.modified) || p.modified < 0)) failure('Invalid Tolino reading position');
++  return { revision: data.revision, position: p };
++}
++
++/** Match CrossPoint/KOReader's binary partial MD5; never use filename or fuzzy title matching for position writes. */
++export function tolinoDocumentHash(bytes: Buffer): string {
++  const hash = createHash('md5');
++  for (let i = -1; i < 11; i++) {
++    const offset = i < 0 ? 0 : 1024 * 4 ** i;
++    if (offset < bytes.length) hash.update(bytes.subarray(offset, Math.min(offset + 1024, bytes.length)));
++  }
++  return hash.digest('hex');
++}
++
++async function book(credential: Credential, match: Match, http: HttpTransport, ctx?: ConnectorContext) {
++  if (!match.fromSidecar || !ctx?.document) failure('Tolino sync requires the downloaded book sidecar and binary document matching');
++  const { origin, headers } = connection(credential);
++  return cachedEpub(['tolino', origin, credential.token, match.externalId, ctx.document], async signal => {
++    const res = await http(`${origin}/api/download?id=${encodeURIComponent(match.externalId)}`, {
++      method: 'GET', headers, redirect: 'error', signal,
++    });
++    check(res.status);
++    if (!res.body) failure('Tolino EPUB response has no body');
++    const reader = res.body.getReader(), chunks: Uint8Array[] = [];
++    let size = 0;
++    try {
++      for (;;) {
++        const { done, value } = await reader.read();
++        if (done) break;
++        size += value.length;
++        if (size > 200 * 1024 * 1024) failure('Tolino EPUB exceeds 200 MiB');
++        chunks.push(value);
++      }
++    } finally { await reader.cancel(); reader.releaseLock(); }
++    const bytes = Buffer.concat(chunks, size);
++    if (tolinoDocumentHash(bytes) !== ctx.document) failure('Tolino EPUB edition mismatch: use binary matching and the same downloaded EPUB');
++    return { ...res, body: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) };
++  });
++}
++
++export const tolinoConnector: Connector = {
++  id: 'tolino',
++  displayName: 'Tolino / Thalia (local helper)',
++  tier: 3,
++  capabilities: { read: true, write: true },
++  carries: ['progress', 'finished'],
++  credentialKind: 'token',
++  beta: true,
++  options: [
++    { key: 'progress', label: 'Send reading positions to Tolino', default: false, gates: 'progress' },
++    { key: 'finished', label: 'Send finished reading positions to Tolino', default: false, gates: 'finished' },
++  ],
++  async validate(credential, http) {
++    const { origin, headers } = connection(credential);
++    const res = await http(`${origin}/api/sync-status`, { method: 'GET', headers, redirect: 'error',
++      signal: AbortSignal.timeout(10_000) });
++    check(res.status);
++    const status = await res.json() as { connected?: unknown };
++    return status?.connected === true ? { ok: true, accountLabel: 'Local Tolino Bridge' }
++      : { ok: false, error: 'Sign in on the Tolino helper dashboard first' };
++  },
++  async match() { return null; },
++  async pullProgress(credential, match, http, sinceMs, ctx) {
++    if (!match.fromSidecar) return null;
++    const cloud = await remote(credential, match.externalId, http);
++    if (!cloud.position) return null;
++    const epub = await book(credential, match, http, ctx);
++    const progress = await tolinoXPath(epub, cloud.position.position);
++    return { externalId: match.externalId, percentage: cloud.position.progress, progress,
++      finished: cloud.position.progress === 1, updatedAtMs: cloud.position.modified, furthestReadOnly: true };
++  },
++  async push(credential, match, event, http, ctx) {
++    if (typeof event.progress !== 'string' || typeof event.percentage !== 'number' ||
++        !Number.isFinite(event.percentage) || event.percentage < 0 || event.percentage > 1 ||
++        !Number.isSafeInteger(event.timestamp) || event.timestamp < 0) failure('An exact timestamped reader position is required');
++    const cloud = await remote(credential, match.externalId, http);
++    // Queued events must never undo a newer cloud session, even if it is further back in the book.
++    if (cloud.position && Math.floor(cloud.position.modified / 1000) > event.timestamp) {
++      return { ok: true, note: 'Newer Tolino cloud position retained; pull before continuing' };
++    }
++    const epub = await book(credential, match, http, ctx);
++    const position = await tolinoPoint(epub, event.progress);
++    const { origin, headers } = connection(credential);
++    const body = JSON.stringify({
++      id: match.externalId, revision: cloud.revision, expectedModified: cloud.position?.modified ?? null,
++      position, progress: event.percentage, modified: event.timestamp * 1000,
++    });
++    let res;
++    try {
++      res = await http(`${origin}/api/sync-position`, { method: 'PUT', headers, redirect: 'error',
++        signal: AbortSignal.timeout(120_000), body });
++    } catch (error) {
++      if (!(error instanceof Error)) throw error;
++      failure('Tolino write outcome is unknown; pull before retrying');
++    }
++    if (res.status === 409) return { ok: false, retryable: false, error: 'Tolino conflict: pull cloud position before retrying' };
++    if (res.status < 200 || res.status >= 300) failure(`Tolino write failed (HTTP ${res.status}); pull before retrying`);
++    let result: { synced?: unknown };
++    try { result = await res.json() as { synced?: unknown }; }
++    catch (error) {
++      if (!(error instanceof Error)) throw error;
++      failure('Tolino write response is invalid; pull before retrying');
++    }
++    if (result?.synced !== true) failure('Tolino write not confirmed; pull before retrying');
++    return { ok: true };
++  },
++};
+diff --git a/src/routes/kosync.ts b/src/routes/kosync.ts
+index 8f6b5d4..d705d23 100644
+--- a/src/routes/kosync.ts
++++ b/src/routes/kosync.ts
+@@ -472,7 +472,7 @@ export function kosyncRoutes(db: DB, config: Config, refreshProgress: ProgressRe
+       await refreshProgress(user.id, canonical);
+     } catch (error) {
+       const status = error instanceof Error && error.name === 'TimeoutError' ? 504 : 502;
+-      return c.json({ code: 2003, message: 'BookFusion progress refresh failed' }, status);
++      return c.json({ code: 2003, message: 'Reading progress refresh failed' }, status);
+     }
+     autoPause(db, { userId: user.id, document: canonical });
+     const row = db
+diff --git a/src/routes/v1/progress.ts b/src/routes/v1/progress.ts
+index 644432a..bf3e5d6 100644
+--- a/src/routes/v1/progress.ts
++++ b/src/routes/v1/progress.ts
+@@ -242,7 +242,7 @@ export function progressRoutes(db: DB, refreshProgress: ProgressRefresh = async
+       await refreshProgress(user.id, canonical);
+     } catch (error) {
+       const status = error instanceof Error && error.name === 'TimeoutError' ? 504 : 502;
+-      return c.json({ code: 2003, message: 'BookFusion progress refresh failed' }, status);
++      return c.json({ code: 2003, message: 'Reading progress refresh failed' }, status);
+     }
+     autoPause(db, { userId: user.id, document: canonical });
+     const rows = db
+diff --git a/test/connectors.test.ts b/test/connectors.test.ts
+index 6058fd0..527c480 100644
+--- a/test/connectors.test.ts
++++ b/test/connectors.test.ts
+@@ -77,7 +77,7 @@ describe('connector management API', () => {
+     const ids = body.connectors.map((c: { id: string }) => c.id).sort();
+     // The classic (highlights-only) readwise connector is hidden; still
+     // registered but not listed. Kindle is stealth: hidden until revealed.
+-    expect(ids).toEqual(['audiobookshelf', 'bookfusion', 'bookorbit', 'hardcover', 'jellyfin', 'kosync', 'microblog', 'readest', 'readwise-reader', 'seekquel', 'spotify']);
++    expect(ids).toEqual(['audiobookshelf', 'bookfusion', 'bookorbit', 'hardcover', 'jellyfin', 'kosync', 'microblog', 'readest', 'readwise-reader', 'seekquel', 'spotify', 'tolino']);
+     expect(body.connectors.every((c: { linked: boolean }) => !c.linked)).toBe(true);
+   });
+ 
+diff --git a/test/tolino.test.ts b/test/tolino.test.ts
+new file mode 100644
+index 0000000..6ba8a62
+--- /dev/null
++++ b/test/tolino.test.ts
+@@ -0,0 +1,230 @@
++import { crc32 } from 'node:zlib';
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
++import { clearBookFusionEpubCache } from '../src/connectors/bookfusion-epub.js';
++import { tolinoPoint, tolinoXPath } from '../src/connectors/tolino-epub.js';
++import { tolinoConnector, tolinoDocumentHash } from '../src/connectors/tolino.js';
++import { resetEncryptionKeyCache } from '../src/crypto/secrets.js';
++import { carriesFor, setConnectorOptions, upsertAccount } from '../src/connectors/store.js';
++import { drainQueue } from '../src/connectors/runner.js';
++import { pollAll, startFanInWorker } from '../src/connectors/fanin.js';
++import { upsertProgress } from '../src/routes/kosync.js';
++import { makeTestApp, registerUser } from './helpers.js';
++import type { ConnectorContext, HttpTransport, Match } from '../src/connectors/types.js';
++import { openDatabase, type DB } from '../src/db/db.js';
++
++function files(body = '<p>Grüße😀<em>bold</em> end</p>') {
++  return {
++    'META-INF/container.xml': '<container><rootfiles><rootfile full-path="EPUB/package.opf"/></rootfiles></container>',
++    'EPUB/package.opf': '<package><manifest><item id="a" href="../Text/ch%201.xhtml"/></manifest><spine><itemref idref="a"/></spine></package>',
++    'Text/ch 1.xhtml': `<html>\n<head/>\n<body>\n${body}\n</body>\n</html>`,
++  };
++}
++function epub(body?: string) { return new Map(Object.entries(files(body)).map(([key, value]) => [key, Buffer.from(value)])); }
++function archive(): Buffer {
++  const local: Buffer[] = [], directory: Buffer[] = [];
++  let offset = 0;
++  for (const [path, source] of Object.entries(files())) {
++    const name = Buffer.from(path), data = Buffer.from(source), header = Buffer.alloc(30), central = Buffer.alloc(46);
++    header.writeUInt32LE(0x04034b50); header.writeUInt16LE(20, 4);
++    header.writeUInt32LE(crc32(data), 14); header.writeUInt32LE(data.length, 18);
++    header.writeUInt32LE(data.length, 22); header.writeUInt16LE(name.length, 26);
++    central.writeUInt32LE(0x02014b50); central.writeUInt16LE(20, 6);
++    central.writeUInt32LE(crc32(data), 16); central.writeUInt32LE(data.length, 20);
++    central.writeUInt32LE(data.length, 24); central.writeUInt16LE(name.length, 28); central.writeUInt32LE(offset, 42);
++    local.push(header, name, data); directory.push(central, name); offset += header.length + name.length + data.length;
++  }
++  const end = Buffer.alloc(22), entries = Object.keys(files()).length;
++  end.writeUInt32LE(0x06054b50); end.writeUInt16LE(entries, 8); end.writeUInt16LE(entries, 10);
++  end.writeUInt32LE(Buffer.concat(directory).length, 12); end.writeUInt32LE(offset, 16);
++  return Buffer.concat([...local, ...directory, end]);
++}
++const xpath = '/body/DocFragment[1]/body/p[1]/text()[1].6';
++const point = 'Text/ch%201.xhtml#point(/1/4/2/1:11)';
++const credential = { token: 'synthetic-key-012345678901234567890' };
++const match: Match = { externalId: 'fixture-book', confidence: 1, fromSidecar: true };
++let contextDb: DB;
++function context(document: string): ConnectorContext { return { db: contextDb, userId: 1, document }; }
++
++beforeEach(() => {
++  contextDb = openDatabase(':memory:');
++  clearBookFusionEpubCache();
++  process.env.TOKEN_ENC_KEY = 'a'.repeat(64);
++  resetEncryptionKeyCache();
++});
++afterEach(() => {
++  contextDb.close();
++  clearBookFusionEpubCache(); resetEncryptionKeyCache();
++  delete process.env.TOKEN_ENC_KEY; delete process.env.TOLINO_HELPER_URL;
++  vi.restoreAllMocks();
++});
++
++it('converts real DOM sibling indices, chapter paths and UTF-8 bytes exactly', async () => {
++  expect(await tolinoXPath(epub(), point)).toBe(xpath);
++  expect(await tolinoPoint(epub(), xpath)).toBe(point);
++  expect(await tolinoXPath(epub(), 'ch%201.xhtml#point(/1/4/2:11)')).toBe(xpath);
++});
++it('counts comments and text, excludes processing instructions and retains mixed-inline text ordinals', async () => {
++  const book = epub('<p>ab<!--comment-->cd<![CDATA[ef]]><?pi test?>gh<em>x</em>ij</p>');
++  const position = '/body/DocFragment[1]/body/p[1]/text()[4].1';
++  const locator = 'Text/ch%201.xhtml#point(/1/4/2/5:1)';
++  expect(await tolinoPoint(book, position)).toBe(locator);
++  expect(await tolinoXPath(book, locator)).toBe(position);
++});
++it.each([
++  'chapter#point(/1/4/2:0)', '../Text/ch%201.xhtml#point(/1/4/2:0)',
++  'Text/ch%201.xhtml#point(/1/4/2/1:3)', // middle of ü
++  'Text/ch%201.xhtml#point(/1/4/2/1:99)',
++  'Text/ch%201.xhtml#point(/1/4/99:0)',
++  'Text/ch%201.xhtml#point(/1/2:0)', // head is not reader content
++  'Text/ch%201.xhtml#point(/1/4/2/0:0)',
++])('rejects unresolved or lossy cloud point %s', async locator => {
++  await expect(tolinoXPath(epub(), locator)).rejects.toThrow();
++});
++
++function transport(bytes = archive(), modified = 100000) {
++  const calls: { url: string; method: string; body?: string }[] = [];
++  const http: HttpTransport = async (url, init) => {
++    calls.push({ url, method: init.method, body: init.body });
++    expect(init.redirect).toBe('error');
++    expect(init.headers?.authorization).toBe(`Bearer ${credential.token}`);
++    const path = new URL(url).pathname;
++    if (path === '/api/download') return { status: 200, json: async () => null, text: async () => '',
++      body: new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }) };
++    if (path === '/api/sync-position') return { status: 200, text: async () => '',
++      json: async () => init.method === 'PUT' ? { synced: true } :
++        { revision: 'r1', position: { position: point, progress: 0.35, modified } } };
++    throw new Error('Unexpected helper request');
++  };
++  return { http, calls };
++}
++
++it('pulls the exact cloud XPath only for a verified binary EPUB and sidecar match', async () => {
++  const bytes = archive(), fake = transport(bytes);
++  const ctx = context(tolinoDocumentHash(bytes));
++  const change = await tolinoConnector.pullProgress!(credential, match, fake.http, 0, ctx);
++  expect(change).toMatchObject({ progress: xpath, percentage: 0.35, updatedAtMs: 100000 });
++  await expect(tolinoConnector.pullProgress!(credential, match, fake.http, 0,
++    context('f'.repeat(32)))).rejects.toThrow('edition mismatch');
++  expect(await tolinoConnector.pullProgress!(credential, { ...match, fromSidecar: false }, fake.http, 0, ctx)).toBeNull();
++});
++it('sends one conflict-checked exact point and never retries a 409', async () => {
++  const bytes = archive(), fake = transport(bytes);
++  const result = await tolinoConnector.push(credential, match, {
++    kind: 'progress', timestamp: 200, percentage: 0.4, progress: xpath,
++  }, fake.http, context(tolinoDocumentHash(bytes)));
++  expect(result.ok).toBe(true);
++  expect(JSON.parse(fake.calls.find(call => call.method === 'PUT')!.body!)).toEqual({
++    id: 'fixture-book', revision: 'r1', expectedModified: 100000,
++    position: point, progress: 0.4, modified: 200000,
++  });
++  const conflict: HttpTransport = async (url, init) => init.method === 'PUT'
++    ? { status: 409, json: async () => null, text: async () => '' } : fake.http(url, init);
++  expect(await tolinoConnector.push(credential, match, {
++    kind: 'progress', timestamp: 200, percentage: 0.4, progress: xpath,
++  }, conflict, context(tolinoDocumentHash(bytes)))).toMatchObject({ ok: false, retryable: false });
++});
++it('does not overwrite a newer cloud session with a delayed reader event', async () => {
++  const fake = transport();
++  expect((await tolinoConnector.push(credential, match, {
++    kind: 'progress', timestamp: 50, percentage: 0, progress: xpath,
++  }, fake.http)).ok).toBe(true);
++  expect(fake.calls).toHaveLength(1);
++});
++it.each([0.3, 0.4, 0.400001, 0.5].flatMap(percentage =>
++  [100000, 200000, 300000].map(modified => [percentage, modified])
++))('background Tolino pulls advance but never regress stored progress (%s, modified %s)', async (percentage, modified) => {
++  vi.spyOn(Date, 'now').mockReturnValue(400000);
++  const bytes = archive(), fake = transport(bytes, modified);
++  const http: HttpTransport = async (url, init) => {
++    const response = await fake.http(url, init);
++    if (new URL(url).pathname === '/api/sync-position') {
++      return { ...response, json: async () => ({
++        revision: 'r2', position: { position: point, progress: percentage, modified },
++      }) };
++    }
++    return response;
++  };
++  const { app, db } = makeTestApp({}, { connectorTransport: http });
++  try {
++    const { username, headers } = await registerUser(app);
++    const { id } = db.prepare('SELECT id FROM users WHERE username = ?').get(username) as { id: number };
++    upsertAccount(db, id, 'tolino', credential, null);
++    const document = tolinoDocumentHash(bytes);
++    expect((await app.request('/api/v1/documents', { method: 'PUT', headers,
++      body: JSON.stringify({ items: [{ document, title: 'Synthetic', tolino_id: 'fixture-book' }] }),
++    })).status).toBe(200);
++    upsertProgress(db, { userId: id, document, deviceId: 'reader', device: 'CrossPoint',
++      percentage: 0.4, progress: xpath, position: null, metadata: null, updatedAt: 200 });
++    expect(await pollAll(db, http)).toBe(percentage > 0.4 ? 1 : 0);
++    const saved = db.prepare('SELECT percentage, updated_at FROM progress WHERE user_id = ? AND document = ? ORDER BY updated_at DESC LIMIT 1')
++      .get(id, document);
++    expect(saved).toMatchObject({ percentage: Math.max(0.4, percentage), updated_at: percentage > 0.4 ? 400 : 200 });
++    expect(await pollAll(db, http)).toBe(0);
++    expect(fake.calls.some(call => call.method === 'PUT')).toBe(false);
++  } finally { db.close(); }
++});
++it('background worker runs every five minutes and skips overlapping ticks', async () => {
++  vi.useFakeTimers();
++  let release!: () => void;
++  const poll = vi.fn(() => new Promise<number>(resolve => { release = () => resolve(0); }));
++  const stop = startFanInWorker(contextDb, undefined, poll);
++  try {
++    await vi.advanceTimersByTimeAsync(299999);
++    expect(poll).not.toHaveBeenCalled();
++    await vi.advanceTimersByTimeAsync(1);
++    expect(poll).toHaveBeenCalledTimes(1);
++    await vi.advanceTimersByTimeAsync(300000);
++    expect(poll).toHaveBeenCalledTimes(1);
++    release();
++    await vi.advanceTimersByTimeAsync(300000);
++    expect(poll).toHaveBeenCalledTimes(2);
++    release();
++  } finally { stop(); vi.useRealTimers(); }
++});
++it('does not discard a greater Tolino position when its modification timestamp is unchanged', async () => {
++  const bytes = archive(), fake = transport(bytes, 100000);
++  expect(await tolinoConnector.pullProgress!(credential, match, fake.http, 100000,
++    context(tolinoDocumentHash(bytes)))).toMatchObject({ percentage: 0.35, progress: xpath });
++});
++it('marks uncertain writes as non-retryable rather than blindly retrying', async () => {
++  const bytes = archive(), fake = transport(bytes);
++  const uncertain: HttpTransport = (url, init) => init.method === 'PUT'
++    ? Promise.reject(new Error('timeout')) : fake.http(url, init);
++  await expect(tolinoConnector.push(credential, match, {
++    kind: 'progress', timestamp: 200, percentage: 0.4, progress: xpath,
++  }, uncertain, context(tolinoDocumentHash(bytes))))
++    .rejects.toMatchObject({ retryable: false, message: expect.stringContaining('unknown') });
++});
++it('registers metadata without uploading book-start progress and imports cloud position on the first KOSync GET', async () => {
++  const fake = transport(), bytes = archive();
++  let offline = false;
++  const http: HttpTransport = (url, init) => offline
++    ? Promise.resolve({ status: 500, json: async () => null, text: async () => '' }) : fake.http(url, init);
++  const { app, db } = makeTestApp({}, { connectorTransport: http });
++  try {
++    const { username, headers } = await registerUser(app);
++    const { id } = db.prepare('SELECT id FROM users WHERE username = ?').get(username) as { id: number };
++    upsertAccount(db, id, 'tolino', credential, null);
++    expect(carriesFor(db, id, tolinoConnector, 'progress')).toBe(false);
++    expect(carriesFor(db, id, tolinoConnector, 'finished')).toBe(false);
++    const document = tolinoDocumentHash(bytes);
++    const registered = await app.request('/api/v1/documents', { method: 'PUT', headers,
++      body: JSON.stringify({ items: [{ document, title: 'Synthetic', tolino_id: 'fixture-book' }] }) });
++    expect(registered.status).toBe(200);
++    const read = await app.request(`/syncs/progress/${document}`, { headers });
++    expect(read.status).toBe(200);
++    expect(await read.json()).toMatchObject({ progress: xpath, percentage: 0.35 });
++    expect(fake.calls.every(call => call.method === 'GET')).toBe(true);
++    setConnectorOptions(db, id, 'tolino', {progress: true, finished: true});
++    const upload = await app.request('/syncs/progress', {method: 'PUT', headers,
++      body: JSON.stringify({document, progress: xpath, percentage: 0.4, device_id: 'reader', device: 'CrossPoint'})});
++    expect(upload.status).toBe(200);
++    expect(await drainQueue(db, fake.http)).toBe(1);
++    expect(fake.calls.filter(call => call.method === 'PUT')).toHaveLength(1);
++    expect(db.prepare("SELECT COUNT(*) AS count FROM connector_queue WHERE status = 'dead'").get()).toMatchObject({count: 0});
++    offline = true;
++    const failed = await app.request(`/syncs/progress/${document}`, { headers });
++    expect(failed.status).toBe(502);
++    expect(await failed.json()).toMatchObject({ message: 'Reading progress refresh failed' });
++  } finally { db.close(); }
++});

@@ -1,0 +1,47 @@
+services:
+  helper:
+    image: crosspoint-pytolino-login:local
+    build:
+      context: .
+      dockerfile: Dockerfile.login
+    container_name: tolino-bridge
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${BRIDGE_BIND_ADDRESS:-0.0.0.0}:8080:8080"
+      - "${BRIDGE_BIND_ADDRESS:-0.0.0.0}:6080:6080"
+      - "${BRIDGE_BIND_ADDRESS:-0.0.0.0}:8081:8081"
+    environment:
+      HELPER_ADMIN_ORIGIN: "http://${BRIDGE_HOST:?Set BRIDGE_HOST to the Unraid IP or DNS name}:8080"
+      HELPER_BROWSER_ORIGIN: "http://${BRIDGE_HOST}:6080"
+      HELPER_PUBLIC_URL: "http://${BRIDGE_HOST}:8081"
+      HELPER_DATA_DIR: /data
+      HELPER_STORAGE_KEY_FILE: /run/secrets/storage_key
+      HELPER_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      HELPER_VNC_PASSWORD_FILE: /run/secrets/vnc_password
+      HELPER_API_KEY_FILE: /run/secrets/helper_api_key
+      HELPER_SYNC_WRITES: "${HELPER_SYNC_WRITES:-0}"
+    volumes:
+      - "${BRIDGE_ROOT:-/mnt/user/appdata/tolino-bridge}/data:/data"
+    secrets:
+      - storage_key
+      - admin_password
+      - vnc_password
+      - helper_api_key
+    tmpfs:
+      - /tmp:rw,nosuid,size=1g
+    shm_size: 512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  storage_key:
+    file: "${BRIDGE_ROOT:-/mnt/user/appdata/tolino-bridge}/secrets/storage-key"
+  admin_password:
+    file: "${BRIDGE_ROOT:-/mnt/user/appdata/tolino-bridge}/secrets/admin-password"
+  vnc_password:
+    file: "${BRIDGE_ROOT:-/mnt/user/appdata/tolino-bridge}/secrets/vnc-password"
+  helper_api_key:
+    file: "${BRIDGE_ROOT:-/mnt/user/appdata/tolino-bridge}/secrets/helper-api-key"

@@ -1,0 +1,7 @@
+{
+  "id": "tolino-sync",
+  "title": "Thalia / Tolino",
+  "description": "Native cloud library and EPUB downloads via Tolino Bridge. Browser setup; no reader-position sync.",
+  "version": "0.1.0",
+  "mount": "settings"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "crosspoint-tolino-sync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser-side CrossPoint SD plugin for Thalia/Tolino books",
+  "scripts": {
+    "check": "node --check plugins/tolino-sync/plugin.js",
+    "test": "node --test test/*.test.cjs",
+    "package": "sh scripts/package.sh"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

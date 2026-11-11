@@ -1,0 +1,36 @@
+services:
+  sync:
+    image: crosspoint-sync-tolino:local
+    build:
+      context: "${CROSSPOINT_SYNC_CHECKOUT:?Set CROSSPOINT_SYNC_CHECKOUT to the patched checkout}"
+    init: true
+    ports:
+      - "${SYNC_BIND_ADDRESS:-127.0.0.1}:8082:8080"
+    environment:
+      TOLINO_HELPER_URL: http://helper:8081
+      ALLOW_HTTP_LOCALHOST: "${SYNC_ALLOW_HTTP_LOCALHOST:-1}"
+      TRUST_PROXY: "${SYNC_TRUST_PROXY:-0}"
+      REGISTRATION_DISABLED: "${SYNC_REGISTRATION_DISABLED:-0}"
+    command:
+      - node
+      - --input-type=module
+      - -e
+      - |
+        import { readFileSync } from 'node:fs';
+        process.env.TOKEN_ENC_KEY = readFileSync('/run/secrets/sync_storage_key', 'utf8').trim();
+        await import('./dist/index.js');
+    secrets:
+      - sync_storage_key
+    volumes:
+      - sync_data:/data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  sync_storage_key:
+    file: "${SYNC_STORAGE_KEY_PATH:?Set SYNC_STORAGE_KEY_PATH to a persistent private key file}"
+
+volumes:
+  sync_data:

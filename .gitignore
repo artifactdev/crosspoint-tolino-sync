@@ -1,0 +1,7 @@
+/dist/
+/node_modules/
+/plugins/tolino-sync/settings.json
+/plugins/tolino-sync/cloud-state.json
+/plugins/tolino-sync/response.json
+/plugins/tolino-sync/response.json.part
+/.playwright-mcp

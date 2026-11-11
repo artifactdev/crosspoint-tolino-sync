@@ -1,0 +1,34 @@
+{
+  "title": "Thalia / Tolino",
+  "description": "Cloud library and EPUB downloads through Tolino Bridge.",
+  "config": {"file": "settings.json"},
+  "auth": {"type": "none"},
+  "browse": {
+    "url": "{cfg.helperUrl}/api/catalog",
+    "headers": {
+      "Authorization": "Bearer {cfg.helperApiKey}",
+      "X-Tolino-Mode": "{cfg.mode}",
+      "X-Tolino-Transport-Accepted": "{cfg.nativeTransportAccepted}"
+    },
+    "items": "books",
+    "page_size": 8,
+    "fields": {
+      "id": "id",
+      "title": "title",
+      "author": "author",
+      "url": "sidecar",
+      "description": "description"
+    }
+  },
+  "download": {
+    "url": "{cfg.helperUrl}/api/native-download?id={id}",
+    "headers": {
+      "Authorization": "Bearer {cfg.helperApiKey}",
+      "X-Tolino-Mode": "{cfg.mode}",
+      "X-Tolino-Transport-Accepted": "{cfg.nativeTransportAccepted}"
+    },
+    "dest_dir": "/Books/Tolino",
+    "filename": "{title}.epub",
+    "sidecar": {"path": "{dest}.meta.json", "body": "{url}"}
+  }
+}

@@ -211,10 +211,16 @@ Existing duplicates are not deleted or renamed; files moved outside the configur
 folder cannot be detected. Renamed files need their matching metadata sidecar.
 SD lookup errors stop the download rather than guessing that a book is absent.
 
-The stock native catalog has no pre-download existence check. Shared filenames
-prevent new browser/native filename variants, but native **Fetch can still
-overwrite an existing EPUB and clear its reader cache**. No firmware modification
-is included. Use the browser check to avoid repeat downloads.
+The stock native catalog has no pre-download existence check: native **Fetch can
+still overwrite an existing EPUB and clear its reader cache**.
+The optional [X4 Pro custom firmware](tools/firmware/README.md), based on original
+CrossPoint 2.0.0, adds identity-based native duplicate protection and
+**Alle fehlenden EPUBs laden** directly under Home > Plugins > Thalia / Tolino.
+It downloads all supported cloud EPUBs across catalog pages, skipping existing
+books without changing their metadata or reading cache. DRM books are excluded.
+The matching GitHub Action builds the official `x4pro-gh_release` target and
+publishes firmware/plugin prereleases once committed and pushed.
+Without that custom firmware, use the browser check to avoid repeat downloads.
 
 Existing sidecar keys are preserved while adding
 `tolino_identifier`, `tolino_publication_id` and `tolino_id`. Large relay responses fall back

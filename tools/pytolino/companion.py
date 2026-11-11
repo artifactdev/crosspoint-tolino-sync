@@ -175,6 +175,7 @@ class Companion:
         self.on_expired = on_expired
         self.sync_writes = os.environ.get("HELPER_SYNC_WRITES") == "1"
         self.reading_version = 0
+        self.last_sync_write = None
 
     def client(self):
         snapshot = self.state.snapshot()
@@ -263,6 +264,18 @@ class Companion:
         return {"publicationId": publication, "revision": result["revision"], "position": position}
 
     def write_sync_position(self, body):
+        try:
+            result = self._write_sync_position(body)
+        except (APIError, requests.RequestException) as error:
+            self.last_sync_write = {
+                "synced": False, "error": str(error) if isinstance(error, APIError)
+                else "Tolino cloud connection failed; pull before retrying.",
+            }
+            raise
+        self.last_sync_write = {"synced": True}
+        return result
+
+    def _write_sync_position(self, body):
         if not self.sync_writes:
             raise APIError(403, "Cloud writes disabled. Enable HELPER_SYNC_WRITES=1 explicitly.")
         if not isinstance(body, dict) or set(body) != {
@@ -317,17 +330,21 @@ class Companion:
                 elif (re.fullmatch(r"/publications/[^/]+/bookmark/[^/]+", path)
                       and path.split("/")[2].replace("~1", "/").replace("~0", "~") == publication):
                     matches[path] = change
-            if not matches:
-                raise APIError(409, "Open this book once in the official webreader to create a cloud bookmark.")
-            selected = max(matches.values(), key=lambda patch: patch["value"]["modified"])
-            if not isinstance(selected["value"].get("revision"), str) or not selected["value"]["revision"]:
-                raise APIError(502, "Cloud bookmark revision is missing; no write performed.")
-            value = {key: selected["value"][key] for key in ("revision",) if key in selected["value"]}
+            if matches:
+                selected = max(matches.values(), key=lambda patch: patch["value"]["modified"])
+                if not isinstance(selected["value"].get("revision"), str) or not selected["value"]["revision"]:
+                    raise APIError(502, "Cloud bookmark revision is missing; no write performed.")
+                value = {"revision": selected["value"]["revision"]}
+                operation, path = "replace", selected["path"]
+            else:
+                # Like the official client, add to the collection; the server assigns the slot/revision.
+                escaped = publication.replace("~", "~0").replace("/", "~1")
+                operation, path, value = "add", f"/publications/{escaped}/bookmark", {}
             value.update({"position": position, "progress": body["progress"], "modified": body["modified"]})
             # Old provider page counts belong to the old position; do not attach them to a new locator.
             result = self.remote(client, "PATCH", "/sync-data?paths=publications", {
                 "revision": current["revision"],
-                "patches": [{"op": "replace", "path": selected["path"], "value": value}]})
+                "patches": [{"op": operation, "path": path, "value": value}]})
             if not isinstance(result, dict) or not isinstance(result.get("revision"), str):
                 raise APIError(502, "Cloud write was not confirmed. Pull before retrying.")
             verified = self.remote(client, "PATCH", "/sync-data?paths=publications",

@@ -15,7 +15,7 @@ function harness() {
     });
     return nodes.get(id);
   }
-  let now = 0, version = 0, reads = 0, fail = false, pending;
+  let now = 0, version = 0, reads = 0, fail = false, pending, lastSyncWrite;
   const context = vm.createContext({
     TolinoDisplay: display, Date: {now: () => now},
     document: {getElementById: node, querySelectorAll: () => []},
@@ -28,7 +28,7 @@ function harness() {
         return {ok: true, json: async () => ({positions: {}})};
       }
       return {ok: true, json: async () => path === "/status"
-        ? {connected: true, busy: false, inventory: [], message: "", readingVersion: version}
+        ? {connected: true, busy: false, inventory: [], message: "", readingVersion: version, lastSyncWrite}
         : {apiKey: "", publicUrl: ""}};
     },
   });
@@ -37,6 +37,7 @@ function harness() {
     context, nodes, timers, reads: () => reads,
     time: value => { now = value; }, push: () => { version++; },
     fail: value => { fail = value; }, hold: value => { pending = value; },
+    write: value => { lastSyncWrite = value; },
     poll: () => vm.runInContext("poll(false)", context),
     flush: () => new Promise(resolve => setImmediate(resolve)),
   };
@@ -71,4 +72,18 @@ test("failed automatic reads show errors and wait five minutes before retrying",
   assert.equal(h.reads(), 2);
   h.time(600000); h.fail(false); await h.poll(); await h.flush();
   assert.equal(h.reads(), 3);
+});
+
+test("dashboard distinguishes failed cloud delivery from confirmed cloud writes", async () => {
+  const h = harness();
+  await h.flush();
+  h.write({synced: false, error: "Cloud state changed."});
+  await h.poll();
+  assert.match(h.nodes.get("sync-write-status").textContent, /Cloud-Push fehlgeschlagen: Cloud state changed/);
+  assert.match(h.nodes.get("sync-write-status").textContent, /allein bestätigt noch keine/);
+  assert.equal(h.reads(), 1);
+  h.write({synced: true}); h.push();
+  await h.poll(); await h.flush();
+  assert.equal(h.nodes.get("sync-write-status").textContent, "Letzter Cloud-Push von Tolino bestätigt.");
+  assert.equal(h.reads(), 2);
 });

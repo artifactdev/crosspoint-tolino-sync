@@ -51,6 +51,11 @@ jobs:
         run: |
           git -C firmware apply --check ../bridge/tools/firmware/native-bulk.patch
           git -C firmware apply ../bridge/tools/firmware/native-bulk.patch
+      - name: Test plugin
+        working-directory: bridge
+        run: |
+          npm run check
+          npm test
       - name: Build X4 Pro toolchain image
         run: docker build -t tolino-firmware-builder bridge/tools/firmware
       - name: Compile Xteink X4 Pro
@@ -72,8 +77,9 @@ jobs:
           cp dist/tolino-sync-*.zip ../artifacts/
           cp tools/firmware/native-bulk.patch ../artifacts/
           cd ..
-          printf 'Original CrossPoint: %s\nBridge: %s\nTarget: x4pro-gh_release (ESP32-S3)\n' \
-            "$(git -C firmware rev-parse HEAD)" "$(git -C bridge rev-parse HEAD)" > artifacts/build-info.txt
+          printf 'Original CrossPoint: %s\nSDK: %s\nBridge: %s\nTarget: x4pro-gh_release (ESP32-S3)\n' \
+            "$(git -C firmware rev-parse HEAD)" "$(git -C firmware/freeink-sdk rev-parse HEAD)" \
+            "$(git -C bridge rev-parse HEAD)" > artifacts/build-info.txt
           cd artifacts
           sha256sum ./*.bin ./*.zip ./*.patch build-info.txt > SHA256SUMS
       - uses: actions/upload-artifact@v4

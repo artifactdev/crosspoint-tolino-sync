@@ -1,0 +1,366 @@
+diff --git a/docs/sd-plugins.md b/docs/sd-plugins.md
+index 0a9d0ab..19fc037 100644
+--- a/docs/sd-plugins.md
++++ b/docs/sd-plugins.md
+@@ -321,6 +321,17 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for
+   },
+ 
+   "download": {
++    // Custom 2.0.0-tolino.1 extension. Stock firmware ignores these fields.
++    // Existing files must never be replaced when enabled. identity_key compares
++    // that JSON field in sidecar.body with adjacent <file>.meta.json files,
++    // recognizing renamed downloads too; missing/conflicting target identities fail.
++    "skip_existing": true,
++    "identity_key": "service_book_id",
++    "bulk": {
++      "url": "https://.../downloadable-books", // same fields/auth/paging as browse
++      "title": "Download missing books",
++      "notice": "Download all missing books? Existing files remain unchanged."
++    },
+     "url": "https://.../books/{id}/download",
+     "method": "POST",
+     "headers": { "Authorization": "Bearer {token}" },  // file GET too, unless url_path
+diff --git a/lib/I18n/translations/english.yaml b/lib/I18n/translations/english.yaml
+index 81d3edd..2c96fee 100644
+--- a/lib/I18n/translations/english.yaml
++++ b/lib/I18n/translations/english.yaml
+@@ -284,6 +284,10 @@ STR_NO_ENTRIES: "No entries found"
+ STR_DOWNLOADING: "Downloading..."
+ STR_DOWNLOAD_FAILED: "Download failed"
+ STR_DOWNLOAD_COMPLETE: "Download complete"
++STR_BULK_DOWNLOAD: "Download missing books"
++STR_BULK_NOTICE: "Download all missing books? Existing books and reading positions stay unchanged. Back cancels the transfer."
++STR_BULK_DOWNLOADED: "downloaded"
++STR_BULK_SKIPPED: "skipped"
+ STR_ERROR_MSG: "Error:"
+ STR_UNNAMED: "Unnamed"
+ STR_HOLD_OPEN_TO_DELETE: "Hold Open to Delete"
+diff --git a/lib/I18n/translations/german.yaml b/lib/I18n/translations/german.yaml
+index 8c73ee7..d5c0e88 100644
+--- a/lib/I18n/translations/german.yaml
++++ b/lib/I18n/translations/german.yaml
+@@ -544,6 +544,10 @@ STR_SYNCING_CLIPPINGS: "Synchronisiere Textstellen..."
+ STR_CLIPPING_SYNC_FAILED: "Textstellen synchronisieren fehlgeschlagen"
+ STR_OTHER: "Andere"
+ STR_DOWNLOAD_COMPLETE: "Download abgeschlossen"
++STR_BULK_DOWNLOAD: "Fehlende Buecher laden"
++STR_BULK_NOTICE: "Alle fehlenden Buecher laden? Vorhandene Buecher und Lesestaende bleiben unveraendert. Zurueck bricht den Download ab."
++STR_BULK_DOWNLOADED: "geladen"
++STR_BULK_SKIPPED: "uebersprungen"
+ STR_HOLD_OPEN_FOR_ACTIONS: "Zum Ausführen von Aktionen gedrückt halten"
+ STR_FEED_UNAUTHORIZED: "Benutzername und Passwort überprüfen"
+ STR_FEED_REDIRECTED: "Der Server wurde umgeleitet. Versuche es mit der https:// URL"
+diff --git a/platformio.ini b/platformio.ini
+index f96f663..1139973 100644
+--- a/platformio.ini
++++ b/platformio.ini
+@@ -4,7 +4,7 @@ build_cache_dir = .cache
+ extra_configs = platformio.local.ini
+ 
+ [crosspoint]
+-version = 2.0.0
++version = 2.0.0-tolino.1
+ 
+ [base]
+ platform = https://github.com/pioarduino/platform-espressif32/releases/download/55.03.311/platform-espressif32.zip
+diff --git a/src/activities/plugins/PluginCatalogActivity.cpp b/src/activities/plugins/PluginCatalogActivity.cpp
+index fcf3ab3..107a913 100644
+--- a/src/activities/plugins/PluginCatalogActivity.cpp
++++ b/src/activities/plugins/PluginCatalogActivity.cpp
+@@ -328,6 +328,11 @@ bool PluginCatalogActivity::loadManifest() {
+   manifest.dlUser = dl["username"] | "";
+   manifest.dlPass = dl["password"] | "";
+   manifest.destDir = pluginhttp::inPluginDir(pluginDir, dl["dest_dir"] | "");
++  manifest.bulkUrl = dl["bulk"]["url"] | "";
++  manifest.skipExisting = dl["skip_existing"] | false;
++  manifest.identityKey = dl["identity_key"] | "";
++  bulkTitle = dl["bulk"]["title"] | tr(STR_BULK_DOWNLOAD);
++  bulkNotice = dl["bulk"]["notice"] | tr(STR_BULK_NOTICE);
+   if (!manifest.destDir.empty() && !protectedpaths::isPluginPath(manifest.destDir)) {
+     LOG_ERR("PCAT", "dest_dir outside plugin space: %s", manifest.destDir.c_str());
+     return false;
+@@ -855,10 +860,12 @@ int PluginCatalogActivity::rowCount() const {
+     return static_cast<int>(installedPlugins.size()) + (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
+   if (state == State::LIST_PICKER) return static_cast<int>(manifest.browseLists.size());
+   if (state != State::BROWSING) return 0;
+-  return static_cast<int>(items.size()) + (prevRowVisible() ? 1 : 0) + (nextRowVisible() ? 1 : 0);
++  return static_cast<int>(items.size()) + (prevRowVisible() ? 1 : 0) + (nextRowVisible() ? 1 : 0) +
++         (manifest.hasBulk() ? 1 : 0);
+ }
+ 
+ const std::string& PluginCatalogActivity::activeBrowseUrl() const {
++  if (bulkRunning) return manifest.bulkUrl;
+   // Search overrides the list view, reusing the browse url when unspecified.
+   if (searchActive) return pick(manifest.searchUrl, manifest.browseReq.url);
+   if (currentList < 0 || currentList >= static_cast<int>(manifest.browseLists.size())) return manifest.browseReq.url;
+@@ -1089,6 +1096,164 @@ void PluginCatalogActivity::downloadItem(const int itemIndex) {
+   finishDownload(result);
+ }
+ 
++void PluginCatalogActivity::confirmDownloadAll() {
++  DetailsSpec spec;
++  spec.header = catalogTitle;
++  spec.title = bulkTitle;
++  spec.description = bulkNotice;
++  spec.actionLabel = tr(STR_FETCH);
++  auto confirmation = makeUniqueNoThrow<DetailsActivity>(renderer, mappedInput, std::move(spec));
++  if (!confirmation) {
++    fail(StrId::STR_MEMORY_ERROR);
++    return;
++  }
++  startActivityForResult(std::move(confirmation), [this](const ActivityResult& result) {
++    if (!result.isCancelled) downloadAll();
++  });
++}
++
++void PluginCatalogActivity::downloadAll() {
++  bulkRunning = true;
++  bulkDownloaded = bulkSkipped = 0;
++  page = 1;
++  beginLoading();
++  if (!fetchBrowseResponse()) {
++    bulkRunning = false;
++    return;
++  }
++  HttpDownloader::DownloadError result = HttpDownloader::OK;
++  beginDownload(bulkTitle);
++  for (;;) {
++    if (!parseBrowseResponse()) {
++      bulkRunning = false;
++      return;
++    }
++    const bool more = hasMore;
++    std::vector<Item> batch;
++    {
++      RenderLock lock;
++      releaseRows();
++      std::vector<fui::ListItem>().swap(rowItems);
++      batch.swap(items);
++    }
++    for (const auto& item : batch) {
++      mappedInput.update(true);
++      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) cancelDownload = true;
++      if (cancelDownload) {
++        result = HttpDownloader::ABORTED;
++        break;
++      }
++      statusMessage = std::to_string(bulkDownloaded) + " " + tr(STR_BULK_DOWNLOADED) + ", " +
++                      std::to_string(bulkSkipped) + " " + tr(STR_BULK_SKIPPED) + "\n" + item.title;
++      requestUpdateAndWait();
++      result = downloadBook(item);
++      if (result != HttpDownloader::OK) break;
++      if (lastDownloadSkipped)
++        ++bulkSkipped;
++      else
++        ++bulkDownloaded;
++      LOG_INF("PCAT", "Bulk progress: %u downloaded, %u skipped", static_cast<unsigned>(bulkDownloaded),
++              static_cast<unsigned>(bulkSkipped));
++    }
++    if (result != HttpDownloader::OK || !more) break;
++    if (++page > 1000) {
++      LOG_ERR("PCAT", "Bulk catalog exceeded 1000 pages");
++      result = HttpDownloader::FILE_ERROR;
++      break;
++    }
++    if (browsePaging() != plugincatalogpaging::Paging::Static) {
++      session = makeUniqueNoThrow<freeink::SecureHttpClient>();
++      if (!session) {
++        bulkRunning = false;
++        fail(StrId::STR_MEMORY_ERROR);
++        return;
++      }
++      if (!fetchBrowseResponse()) {
++        bulkRunning = false;
++        return;
++      }
++    }
++    state = State::DOWNLOADING;
++  }
++  bulkRunning = false;
++  session.reset();
++  // Restore the ordinary catalog, never leave the bulk-only response as the visible list.
++  page = 1;
++  session = makeUniqueNoThrow<freeink::SecureHttpClient>();
++  if (!session) {
++    fail(StrId::STR_MEMORY_ERROR);
++    return;
++  }
++  if (!fetchBrowseResponse() || !parseBrowseResponse()) return;
++  statusMessage = std::to_string(bulkDownloaded) + " " + tr(STR_BULK_DOWNLOADED) + ", " + std::to_string(bulkSkipped) +
++                  " " + tr(STR_BULK_SKIPPED);
++  LOG_INF("PCAT", "Bulk finished: %s", statusMessage.c_str());
++  finishDownload(result);
++}
++
++HttpDownloader::DownloadError PluginCatalogActivity::existingBook(const Item& item, const std::string& dest,
++                                                                  bool& found) {
++  found = false;
++  if (!manifest.skipExisting) return HttpDownloader::OK;
++  const bool occupied = Storage.exists(dest.c_str());
++  if (manifest.identityKey.empty()) {
++    if (!occupied) return HttpDownloader::OK;
++    HalFile file = Storage.open(dest.c_str());
++    if (!file || file.isDirectory() || file.size() == 0) return HttpDownloader::FILE_ERROR;
++    found = true;
++    return HttpDownloader::OK;
++  }
++  if (manifest.sidecarPath != "{dest}.meta.json") {
++    LOG_ERR("PCAT", "identity_key requires adjacent metadata sidecars");
++    return HttpDownloader::FILE_ERROR;
++  }
++  JsonDocument expected;
++  if (deserializeJson(expected, substituted(manifest.sidecarBody, &item)) != DeserializationError::Ok)
++    return HttpDownloader::FILE_ERROR;
++  const std::string identity = variantToString(resolvePath(expected.as<JsonVariantConst>(), manifest.identityKey));
++  if (identity.empty()) return HttpDownloader::FILE_ERROR;
++  const std::string folder = dest.substr(0, dest.find_last_of('/'));
++  HalFile dir = Storage.open(folder.empty() ? "/" : folder.c_str());
++  if (!dir || !dir.isDirectory()) return HttpDownloader::FILE_ERROR;
++  for (HalFile file = dir.openNextFile(); file; file = dir.openNextFile()) {
++    char name[256];
++    if (!file.getName(name, sizeof(name))) return HttpDownloader::FILE_ERROR;
++    const std::string path = folder + "/" + name;
++    const bool canonical = strcasecmp(path.c_str(), dest.c_str()) == 0;
++    if (canonical && (file.isDirectory() || file.size() == 0)) return HttpDownloader::FILE_ERROR;
++    if (file.isDirectory()) continue;
++    const std::string metadataPath = path + ".meta.json";
++    if (!Storage.exists(metadataPath.c_str())) {
++      if (canonical) {
++        LOG_ERR("PCAT", "Existing target has no identity sidecar; refusing overwrite");
++        return HttpDownloader::FILE_ERROR;
++      }
++      continue;
++    }
++    std::string raw;
++    JsonDocument metadata;
++    if (!Storage.readFileToString("PCAT", metadataPath, 2048, raw) ||
++        deserializeJson(metadata, raw) != DeserializationError::Ok) {
++      LOG_ERR("PCAT", "Unreadable book sidecar; refusing overwrite");
++      return HttpDownloader::FILE_ERROR;
++    }
++    const std::string actual = variantToString(resolvePath(metadata.as<JsonVariantConst>(), manifest.identityKey));
++    if (canonical && actual != identity) {
++      LOG_ERR("PCAT", "Filename belongs to another book; refusing overwrite");
++      return HttpDownloader::FILE_ERROR;
++    }
++    if (actual == identity) {
++      if (file.size() == 0) return HttpDownloader::FILE_ERROR;
++      found = true;
++    }
++  }
++  if (occupied && !found) {
++    LOG_ERR("PCAT", "Existing target could not be verified; refusing overwrite");
++    return HttpDownloader::FILE_ERROR;
++  }
++  return HttpDownloader::OK;
++}
++
+ void PluginCatalogActivity::downloadFinished(const bool cancelled) {
+   state = cancelled ? State::BROWSING : State::DONE;
+   requestUpdate();
+@@ -1177,6 +1342,7 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBundle(const Item&
+ }
+ 
+ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& item) {
++  lastDownloadSkipped = false;
+   // Resolve the file URL: either the template itself, or one API hop away.
+   std::string fileUrl;
+   // The file GET carries the download headers unless url_path answered with a
+@@ -1209,6 +1375,10 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
+   const char* folder = folderDir.c_str();
+   bool haveFolder = folder[0] != '\0';
+   if (haveFolder && !Storage.exists(folder) && !Storage.mkdir(folder)) {
++    if (manifest.skipExisting) {
++      LOG_ERR("PCAT", "mkdir failed for %s; download stopped", folder);
++      return HttpDownloader::FILE_ERROR;
++    }
+     LOG_ERR("PCAT", "mkdir failed for %s, using SD root", folder);
+     haveFolder = false;
+   }
+@@ -1230,6 +1400,14 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
+     LOG_ERR("PCAT", "unsafe download dest rejected: %s", dest.c_str());
+     return HttpDownloader::FILE_ERROR;
+   }
++  bool exists = false;
++  const auto existingResult = existingBook(item, dest, exists);
++  if (existingResult != HttpDownloader::OK) return existingResult;
++  if (exists) {
++    lastDownloadSkipped = true;
++    LOG_INF("PCAT", "Existing book retained: %s", dest.c_str());
++    return HttpDownloader::OK;
++  }
+ 
+   const auto fetchFile = [&] {
+     const std::vector<HttpDownloader::Header> fileHeaders =
+@@ -1264,12 +1442,15 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
+     // not climb out of the tree or land on a credential store.
+     if (!protectedpaths::isPluginPath(path)) {
+       LOG_ERR("PCAT", "unsafe sidecar path rejected: %s", path.c_str());
++      if (manifest.skipExisting) return HttpDownloader::FILE_ERROR;
+     } else {
+       std::string body = substituted(manifest.sidecarBody, &item);
+       substituteAll(body, "{md5}", md5);
+       substituteAll(body, "{dest}", dest);
+-      if (!Storage.writeFile(path.c_str(), String(body.c_str())))
++      if (!Storage.writeFile(path.c_str(), String(body.c_str()))) {
+         LOG_ERR("PCAT", "Sidecar write failed: %s", path.c_str());
++        if (manifest.skipExisting) return HttpDownloader::FILE_ERROR;
++      }
+     }
+   }
+ 
+@@ -1467,6 +1648,11 @@ void PluginCatalogActivity::activateIndex(const int index) {
+   }
+   // The pager rows bracket the items: "Previous page" ahead of them past
+   // page 1, "Next page" after them while more pages exist.
++  if (manifest.hasBulk() && index == rowCount() - 1) {
++    app.clearTapFlash();
++    confirmDownloadAll();
++    return;
++  }
+   const int itemIndex = index - (prevRowVisible() ? 1 : 0);
+   if (itemIndex == -1 || (nextRowVisible() && itemIndex == static_cast<int>(items.size()))) {
+     app.clearTapFlash();
+@@ -1793,6 +1979,7 @@ void PluginCatalogActivity::rebuildRowItems() {
+       addRow(entry.title.c_str(), entry.author.c_str(), entry.isDir ? ">" : entry.status.c_str());
+     }
+     if (nextRowVisible()) addRow(tr(STR_NEXT_PAGE), nullptr, ">");
++    if (manifest.hasBulk()) addRow(bulkTitle.c_str(), nullptr, ">");
+   }
+ }
+ 
+diff --git a/src/activities/plugins/PluginCatalogActivity.h b/src/activities/plugins/PluginCatalogActivity.h
+index 225c7fb..2682f85 100644
+--- a/src/activities/plugins/PluginCatalogActivity.h
++++ b/src/activities/plugins/PluginCatalogActivity.h
+@@ -105,6 +105,9 @@ class PluginCatalogActivity final : public CatalogActivity {
+     // Optional HTTP Basic credentials for the file GET (webdav); templates.
+     std::string dlUser, dlPass;
+     std::string destDir, filenameTpl;
++    std::string bulkUrl, identityKey;
++    bool skipExisting = false;
++    bool hasBulk() const { return !bulkUrl.empty() && skipExisting && !isXmlList() && !isBundle(); }
+     // Bundle item fields: base URL and relative paths, installed under destDir/subdir.
+     std::string bundleBasePath, bundleFilesPath, bundleSubdir;
+     bool isBundle() const { return !bundleFilesPath.empty(); }
+@@ -160,6 +163,10 @@ class PluginCatalogActivity final : public CatalogActivity {
+   // browseListsUrl was fetched, or failed while fixed lists remain to show.
+   bool listIndexLoaded = false;
+   std::string searchQuery;
++  bool bulkRunning = false;
++  bool lastDownloadSkipped = false;
++  size_t bulkDownloaded = 0, bulkSkipped = 0;
++  std::string bulkTitle, bulkNotice;
+   bool searchActive = false;
+   // Reuse browse TLS; release in the picker and before a single-file download.
+   std::unique_ptr<freeink::SecureHttpClient> session;
+@@ -234,6 +241,9 @@ class PluginCatalogActivity final : public CatalogActivity {
+   bool loadItemDetails(int itemIndex, ItemDetails& details);
+   void showItemDetails(int itemIndex);
+   void downloadItem(int itemIndex);
++  void confirmDownloadAll();
++  void downloadAll();
++  HttpDownloader::DownloadError existingBook(const Item& item, const std::string& dest, bool& found);
+   HttpDownloader::DownloadError downloadBundle(const Item& item);
+   HttpDownloader::DownloadError downloadBook(const Item& item);
+   void beginAuth();

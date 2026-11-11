@@ -114,8 +114,13 @@ Pulls work without write access. Sending progress requires **both**:
 The helper re-fetches the current cloud revision/bookmark and refuses changed
 or newer state. It preserves the provider bookmark slot/revision, writes an
 exact point, omits stale page numbers, and reads back the result. Uncertain
-writes are not blindly retried. Books without any cloud bookmark must first be
-opened once in the official webreader; their bookmark-slot format is not guessed.
+writes are not blindly retried. For books without a cloud bookmark, the helper
+uses the official client's collection-level `add` operation; Tolino assigns the
+bookmark slot and revision. The first write is also read back and confirmed.
+No prior opening in the official webreader is required.
+The helper dashboard separately displays the last cloud-write outcome: the
+reader's "Progress uploaded!" only acknowledges acceptance by the Sync server,
+not completion of its asynchronous Tolino delivery.
 
 Conversion uses one-based RMSDK DOM indices and UTF-8 byte offsets, with
 CrossPoint's codepoint XPath offsets. Unknown locators, split Unicode characters,

@@ -160,14 +160,20 @@ All routes require `Authorization: Bearer <helper-api-key>`.
 | `GET /api/status` | `connected`, `busy`, `apiVersion: 1`; no account secrets |
 | `GET /api/sync-status` | Same status plus `syncWritesEnabled` for the optional server connector |
 | `GET /api/sync-position?id=…` | Exact cloud position and current revision for a library book; missing position is `null` |
-| `PUT /api/sync-position` | Opt-in exact-point write with fresh revision/timestamp conflict checks and read-back verification |
+| `PUT /api/sync-position` | Opt-in exact-point write with fresh revision/timestamp conflict checks and read-back verification; creates a missing bookmark via Tolino's server-assigned collection add |
 | `GET /api/inventory` | Original `PublicationInventory.ebook` and `.edata`; all returned metadata |
 | `POST /api/reading-state` | JSON `{"revision":null}` or previous revision; forwards only an empty cloud `patches` array |
 | `GET /api/download-info?id=…` | Validates library membership and EPUB/DRM; returns relative helper download URL |
 | `GET /api/download?id=…` | Streams validated EPUB bytes, maximum 256 MB; no provider URL/credentials exposed |
 | `GET /api/cover?id=…` | Cover from that library entry; PNG/JPEG/WebP/GIF only, maximum 5 MB |
 | `GET /api/catalog` | Compact native `books` catalog, read-only cloud progress in details, labelled DRM entries and JSON-safe sidecars |
+| `GET /api/catalog?supported=1` | Same authenticated catalog, restricted to supported EPUBs for native bulk downloads; no DRM entries |
 | `GET /api/native-download?id=…` | Validated EPUB for a SHA-256 catalog ID, resolved only against the loaded account library |
+
+The dashboard reports the last cloud-write outcome separately from cloud progress.
+Successful reader upload to the Sync server is not itself confirmation of Tolino
+delivery. A first push no longer requires opening the book in the webreader.
+Failed or unconfirmed writes remain errors and never advance `readingVersion`.
 
 Native routes additionally require `X-Tolino-Mode: helper` and
 `X-Tolino-Transport-Accepted: true`. The installed `device.json` reads those

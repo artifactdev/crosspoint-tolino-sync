@@ -383,6 +383,7 @@ def create_server(port=8080):
             if self.path == "/status":
                 return self.send(200, json.dumps({
                     **state.snapshot(), "readingVersion": companion.reading_version,
+                    "lastSyncWrite": companion.last_sync_write,
                 }).encode())
             return self.send(404, b'{"error":"not found"}')
 

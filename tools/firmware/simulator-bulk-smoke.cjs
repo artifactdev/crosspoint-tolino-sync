@@ -21,7 +21,7 @@ async function main() {
     description: "Synthetic EPUB fixture", sidecar: JSON.stringify({tolino_id: id})}));
   const payload = Buffer.concat([Buffer.from("PK\x03\x04application/epub+zip"), Buffer.alloc(32768, 0)]);
   const calls = [];
-  let failure = "", slow = false, paged = false, simulator;
+  let failure = "", paged = false, simulator;
   const key = "synthetic-bulk-fixture-key-00000000";
   const server = http.createServer((request, response) => {
     if (request.headers.authorization !== "Bearer " + key) {
@@ -50,16 +50,6 @@ async function main() {
       response.writeHead(500).end();
       return;
     }
-    if (slow && id === "c") {
-      response.writeHead(200, {"Content-Length": payload.length * 100, "Content-Type": "application/epub+zip"});
-      let count = 0;
-      const timer = setInterval(() => {
-        response.write(payload);
-        if (++count === 100) { clearInterval(timer); response.end(); }
-      }, 100);
-      response.on("close", () => clearInterval(timer));
-      return;
-    }
     response.writeHead(200, {"Content-Length": payload.length, "Content-Type": "application/epub+zip"}).end(payload);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -86,14 +76,14 @@ async function main() {
     "500:ENTER", "800:WAIT:SCREEN:.*Simulator WiFi",
     "500:ENTER", "800:WAIT:SCREEN:.*Alle fehlenden EPUBs",
     "300:DOWN", "600:DOWN", "900:DOWN", "1200:ENTER",
-    "1500:WAIT:Entering activity: Details", "300:ENTER",
+    "1500:WAIT:Entering activity: Details",
   ];
   async function run(name, expected, cancel = false) {
     const logfile = path.join(root, name + ".log");
     const log = fs.openSync(logfile, "w");
     const steps = [...opening];
-    if (cancel) steps.push("0:WAIT:Downloading:.*id=c", "200:BACK", "1000:WAIT:Bulk finished:", "300:QUIT");
-    else steps.push("0:WAIT:SCREEN:.*" + expected, "300:QUIT");
+    if (cancel) steps.push("300:BACK", "600:WAIT:Exiting activity: Details", "300:QUIT");
+    else steps.push("300:ENTER", "600:WAIT:SCREEN:.*" + expected, "300:QUIT");
     simulator = spawn(binary, [], {cwd: root, env: {...env, CROSSPOINT_SIM_INPUT_SCRIPT: steps.join(";")},
       stdio: ["ignore", log, log]});
     let timer;
@@ -104,7 +94,7 @@ async function main() {
       ]);
       const text = fs.readFileSync(logfile, "utf8");
       assert.equal(code, 0, text.slice(-5000));
-      assert.match(text, new RegExp(cancel ? "Bulk finished:" : expected));
+      assert.match(text, new RegExp(cancel ? "Exiting activity: Details" : expected));
       return text;
     } catch (error) {
       console.error(fs.readFileSync(logfile, "utf8").slice(-5000));
@@ -134,8 +124,9 @@ async function main() {
     }
     const snapshots = fs.readdirSync(folder).map(name => [name, fs.statSync(path.join(folder, name)).mtimeMs]);
     calls.length = 0;
-    await run("repeat", "Download complete");
+    const repeated = await run("repeat", "Download complete");
     assert.deepEqual(calls, [], "Repeated native sync must not redownload anything");
+    assert.doesNotMatch(repeated, /clearBookCache|Done checking metadata cache/);
     assert.deepEqual(fs.readdirSync(folder).map(name => [name, fs.statSync(path.join(folder, name)).mtimeMs]), snapshots);
     assert.equal(fs.statSync(old).mtimeMs, before);
     assert.equal(fs.readFileSync(old + ".meta.json", "utf8"), '{"tolino_id":"a","custom":"keep"}');
@@ -150,20 +141,32 @@ async function main() {
     await run("collision", "Download failed");
     assert.deepEqual(calls, []);
     assert.equal(fs.readFileSync(path.join(folder, "B.epub.meta.json"), "utf8"), '{"tolino_id":"another-book"}');
+    removeDownloaded();
+    fs.writeFileSync(path.join(folder, "B.epub"), payload);
+    await run("missing-identity", "Download failed");
+    assert.deepEqual(calls, []);
+    assert.deepEqual(fs.readFileSync(path.join(folder, "B.epub")), payload);
+    fs.writeFileSync(path.join(folder, "B.epub.meta.json"), "{bad json");
+    await run("malformed-identity", "Download failed");
+    assert.deepEqual(calls, []);
+    removeDownloaded();
+    fs.writeFileSync(path.join(folder, "B.epub"), "");
+    await run("empty-existing-file", "Download failed");
+    assert.deepEqual(calls, []);
     removeDownloaded(); failure = "c";
     await run("network-failure", "Download failed");
     assert.deepEqual(calls, ["b", "c"]);
     assert.ok(!fs.existsSync(path.join(folder, "C.epub")));
     assert.ok(!fs.existsSync(path.join(folder, "C.epub.part")));
-    calls.length = 0; failure = ""; slow = true;
-    await run("cancel", "", true);
-    assert.deepEqual(calls, ["c"]);
+    calls.length = 0; failure = "";
+    await run("cancel-confirmation", "", true);
+    assert.deepEqual(calls, []);
     assert.ok(!fs.existsSync(path.join(folder, "C.epub")));
     assert.ok(!fs.existsSync(path.join(folder, "C.epub.part")));
-    calls.length = 0; slow = false;
+    calls.length = 0;
     await run("resume", "Download complete");
     assert.deepEqual(calls, ["c", "d", "e"]);
-    console.log("PASS: native bulk downloads all pages; skips legacy/renamed identities and DRM; repeat preserves files and sidecars; collisions fail; network failure/cancel clean partials; retry resumes.");
+    console.log("PASS: native bulk downloads all pages; skips legacy/renamed identities and DRM; repeat preserves files and sidecars; collisions fail; failed transfers clean partials; confirmation cancellation makes no writes; retry resumes.");
   } finally {
     await new Promise(resolve => server.close(resolve));
     fs.rmSync(root, {recursive: true, force: true});

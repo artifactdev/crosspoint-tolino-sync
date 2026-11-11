@@ -160,6 +160,11 @@ async function poll(schedule = true) {
     const state = await response.json(), wasConnected = connected; connected = state.connected;
     const pushed = readingVersion !== undefined && readingVersion !== state.readingVersion;
     readingVersion = state.readingVersion;
+    const write = state.lastSyncWrite;
+    $("sync-write-status").classList.toggle("error", write?.synced === false);
+    $("sync-write-status").textContent = write?.synced === false
+      ? "Letzter Cloud-Push fehlgeschlagen: " + write.error + " Der Upload zum Sync-Server allein bestätigt noch keine Cloud-Synchronisierung."
+      : write?.synced === true ? "Letzter Cloud-Push von Tolino bestätigt." : "";
     $("status").textContent = state.message; $("status").classList.toggle("error", !state.busy && !state.connected && state.message.includes("fehlgeschlagen"));
     $("submit").disabled = state.busy || state.testOnly === true;
     $("username").disabled = state.testOnly === true; $("password").disabled = state.testOnly === true;

@@ -62,7 +62,16 @@ An unreadable SD listing or an empty existing file blocks the download.
 
 The unmodified native catalog does not have this check: Fetch can overwrite an
 existing book and clear its reader cache. Use the browser check to avoid repeat
-downloads. This release intentionally does not modify firmware.
+downloads on stock firmware.
+
+The optional [X4 Pro custom firmware](../../tools/firmware/README.md), based on
+original CrossPoint 2.0.0, enables **Alle fehlenden EPUBs laden** in this native
+catalog. It downloads all supported cloud EPUBs across pages, skips existing
+Tolino identities (including renamed files with their metadata), and leaves their
+reading caches untouched. Collisions, missing/malformed target identities and
+empty files stop the download instead of overwriting. Completed downloads survive
+errors and are skipped on retry. Stock firmware ignores these manifest extensions.
+Bulk download does not apply reading positions: continue using Sync Progress.
 
 Only Thalia.de accounts (reseller 3), personal uploads, and unprotected or
 watermarked EPUBs are supported. Adobe DRM/ACSM, PDFs, audiobooks and Kobo

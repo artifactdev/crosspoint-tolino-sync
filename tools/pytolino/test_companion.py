@@ -166,9 +166,33 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual(helper.reading_version, 2)
         with patch.object(helper, "remote", side_effect=[cloud, {"revision": "r2"}, cloud]), self.assertRaises(APIError):
             helper.write_sync_position(body)
-        with patch.object(helper, "remote", return_value={"revision": "r1", "patches": []}), self.assertRaises(APIError):
-            helper.write_sync_position({**body, "expectedModified": None})
         self.assertEqual(helper.reading_version, 2)
+
+    def test_first_push_creates_server_assigned_bookmark_and_verifies_it(self):
+        helper = fixture()
+        helper.sync_writes = True
+        body = {"id": "synthetic-book", "revision": "r1", "expectedModified": None,
+                "position": "chapter.xhtml#point(/1/4/2/1:8)", "progress": 0.42, "modified": 2000}
+        value = {key: body[key] for key in ("position", "progress", "modified")}
+        empty = {"revision": "r1", "patches": []}
+        saved = {"revision": "r3", "patches": [{
+            "op": "add", "path": "/publications/publication-test/bookmark/server-slot",
+            "value": {**value, "revision": "server-revision"}}]}
+        with patch.object(helper, "remote", side_effect=[empty, {"revision": "r2"}, saved]) as remote:
+            self.assertTrue(helper.write_sync_position(body)["synced"])
+            self.assertEqual(remote.call_args_list[1].args[3], {"revision": "r1", "patches": [{
+                "op": "add", "path": "/publications/publication-test/bookmark", "value": value}]})
+        self.assertEqual(helper.reading_version, 1)
+        self.assertEqual(helper.last_sync_write, {"synced": True})
+        with patch.object(helper, "remote", side_effect=[empty, {"revision": "r2"}, empty]), \
+                self.assertRaises(APIError):
+            helper.write_sync_position(body)
+        self.assertFalse(helper.last_sync_write["synced"])
+        self.assertEqual(helper.reading_version, 1)
+        with patch.object(helper, "remote", return_value={**empty, "revision": "changed"}) as remote, \
+                self.assertRaises(APIError):
+            helper.write_sync_position(body)
+        self.assertEqual(remote.call_count, 1)
 
     def test_reading_state_always_sends_empty_patches(self):
         helper = fixture()

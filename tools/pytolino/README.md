@@ -168,7 +168,7 @@ All routes require `Authorization: Bearer <helper-api-key>`.
 | `GET /api/inventory` | Original `PublicationInventory.ebook` and `.edata`; all returned metadata |
 | `POST /api/reading-state` | JSON `{"revision":null}` or previous revision; forwards only an empty cloud `patches` array |
 | `GET /api/download-info?id=…` | Validates library membership and EPUB/DRM; looks up the provider download with inventory publication/deliverable IDs (falling back to the book identifier when absent), then returns a relative helper URL |
-| `GET /api/download?id=…` | Streams validated EPUB bytes, maximum 256 MB; no provider URL/credentials exposed |
+| `GET /api/download?id=…` | Streams validated EPUB bytes, maximum 256 MB; account headers are sent only to Tolino's BOSH content endpoint, never to external download hosts |
 | `GET /api/cover?id=…` | Cover from that library entry; PNG/JPEG/WebP/GIF only, maximum 5 MB |
 | `GET /api/catalog` | Compact native `books` catalog, read-only cloud progress in details, labelled DRM entries and JSON-safe sidecars |
 | `GET /api/catalog?supported=1` | Same authenticated catalog, restricted to supported EPUBs for native bulk downloads; no DRM entries |

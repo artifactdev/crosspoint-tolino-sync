@@ -352,6 +352,25 @@ class CompanionTests(unittest.TestCase):
             self.assertEqual(get.call_args.kwargs["headers"], {"Accept": "application/epub+zip"})
             self.assertFalse(get.call_args.kwargs["allow_redirects"])
 
+    def test_download_sends_credentials_only_to_bosh_content_endpoint(self):
+        helper = fixture()
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as epub:
+            epub.writestr("mimetype", "application/epub+zip")
+        content = archive.getvalue()
+        with patch.object(helper, "download_info",
+                          return_value="https://bosh.pageplace.de/bosh/rest/content/id/book.epub"), \
+                patch("companion.fetch_asset", return_value=(
+                    io.BytesIO(content), len(content), "application/epub+zip")) as fetch:
+            output, _ = helper.download("synthetic-book")
+            output.close()
+        headers_for_url = fetch.call_args.args[3]
+        bosh_headers = headers_for_url("https://bosh.pageplace.de/bosh/rest/content/id/book.epub")
+        self.assertIn("synthetic-access", bosh_headers["t_auth_token"])
+        self.assertEqual(bosh_headers["Accept"], "application/epub+zip")
+        self.assertEqual(headers_for_url("https://cdn.example/book"), {})
+        self.assertEqual(headers_for_url("https://bosh.pageplace.de/bosh/rest/other"), {})
+
     def test_cover_is_selected_from_library_and_rejects_non_raster_content(self):
         helper = fixture()
         helper.state.inventory = [{"epubMetaData": {

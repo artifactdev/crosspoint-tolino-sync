@@ -473,9 +473,19 @@ class Companion:
 
     def download(self, identifier):
         with self.lock:
+            client = self.client()
             url = self.download_info(identifier)
-            # Never forward account or helper credentials to a CDN or redirect target.
-            output, size, _content_type = fetch_asset(url, EPUB, MAX_DOWNLOAD)
+
+            def headers_for_url(candidate):
+                parsed = urlsplit(candidate)
+                if (f"{parsed.scheme}://{parsed.netloc}" == "https://bosh.pageplace.de"
+                        and parsed.path.startswith("/bosh/rest/content/")):
+                    headers = self.headers(client)
+                    headers["Accept"] = EPUB
+                    return headers
+                return {}
+
+            output, size, _content_type = fetch_asset(url, EPUB, MAX_DOWNLOAD, headers_for_url)
             try:
                 if output.read(4) != b"PK\x03\x04":
                     raise APIError(422, "Download is not an EPUB ZIP file.")

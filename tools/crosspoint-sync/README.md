@@ -1,5 +1,9 @@
 # Exact Tolino positions through CrossPoint Sync
 
+For production GHCR deployment of both the bridge and this connector, see the
+[permanent deployment guide](../pytolino/DEPLOYMENT.md). The checkout-and-build
+instructions below remain available for local development.
+
 This is a **server connector**, not a firmware patch. The reader's existing
 manual **Sync Progress** action exchanges actual EPUB XPath positions:
 

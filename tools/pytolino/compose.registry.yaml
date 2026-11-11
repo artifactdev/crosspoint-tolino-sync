@@ -1,0 +1,82 @@
+services:
+  helper:
+    image: "${BRIDGE_IMAGE:-ghcr.io/artifactdev/crosspoint-tolino-bridge:main}"
+    container_name: crosspoint-tolino-bridge
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${BRIDGE_ADMIN_BIND_ADDRESS:-127.0.0.1}:8080:8080"
+      - "${BRIDGE_BROWSER_BIND_ADDRESS:-127.0.0.1}:6080:6080"
+      - "${HELPER_BIND_ADDRESS:-127.0.0.1}:8081:8081"
+    environment:
+      HELPER_ADMIN_ORIGIN: "${HELPER_ADMIN_ORIGIN:?Set the browser-visible dashboard origin}"
+      HELPER_BROWSER_ORIGIN: "${HELPER_BROWSER_ORIGIN:?Set the browser-visible noVNC origin}"
+      HELPER_PUBLIC_URL: "${HELPER_PUBLIC_URL:?Set the API origin reachable by CrossPoint}"
+      HELPER_DATA_DIR: /data
+      HELPER_STORAGE_KEY_FILE: /run/secrets/storage_key
+      HELPER_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      HELPER_VNC_PASSWORD_FILE: /run/secrets/vnc_password
+      HELPER_API_KEY_FILE: /run/secrets/helper_api_key
+      HELPER_SYNC_WRITES: "${HELPER_SYNC_WRITES:-0}"
+    secrets:
+      - storage_key
+      - admin_password
+      - vnc_password
+      - helper_api_key
+    volumes:
+      - bridge_data:/data
+    tmpfs:
+      - /tmp:rw,nosuid,size=1g
+    shm_size: 512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  sync:
+    image: "${SYNC_IMAGE:-ghcr.io/artifactdev/crosspoint-sync-tolino:main}"
+    container_name: crosspoint-sync-tolino
+    restart: unless-stopped
+    init: true
+    depends_on:
+      - helper
+    ports:
+      - "${SYNC_BIND_ADDRESS:-127.0.0.1}:8082:8080"
+    environment:
+      TOLINO_HELPER_URL: http://helper:8081
+      ALLOW_HTTP_LOCALHOST: "${SYNC_ALLOW_HTTP_LOCALHOST:-1}"
+      TRUST_PROXY: "${SYNC_TRUST_PROXY:-0}"
+      REGISTRATION_DISABLED: "${SYNC_REGISTRATION_DISABLED:-0}"
+      BASE_PATH: "${SYNC_BASE_PATH:-}"
+    command:
+      - node
+      - --input-type=module
+      - -e
+      - |
+        import { readFileSync } from 'node:fs';
+        process.env.TOKEN_ENC_KEY = readFileSync('/run/secrets/sync_storage_key', 'utf8').trim();
+        await import('./dist/index.js');
+    secrets:
+      - sync_storage_key
+    volumes:
+      - sync_data:/data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  storage_key:
+    file: "${BRIDGE_SECRETS_DIR:?Set BRIDGE_SECRETS_DIR outside the repository}/storage-key"
+  admin_password:
+    file: "${BRIDGE_SECRETS_DIR:?Set BRIDGE_SECRETS_DIR outside the repository}/admin-password"
+  vnc_password:
+    file: "${BRIDGE_SECRETS_DIR:?Set BRIDGE_SECRETS_DIR outside the repository}/vnc-password"
+  helper_api_key:
+    file: "${BRIDGE_SECRETS_DIR:?Set BRIDGE_SECRETS_DIR outside the repository}/helper-api-key"
+  sync_storage_key:
+    file: "${BRIDGE_SECRETS_DIR:?Set BRIDGE_SECRETS_DIR outside the repository}/sync-storage-key"
+
+volumes:
+  bridge_data:
+  sync_data:

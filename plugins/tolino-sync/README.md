@@ -13,10 +13,14 @@ authentication. See the project README for the full test steps.
 2. Start File Transfer in Join Network mode.
 3. Open http://crosspoint.local/plugins (or your device IP + /plugins).
 4. Open "Connection settings". Choose "Docker helper (recommended)" to use
-   the optional Tolino Bridge: sign in on its local dashboard, enter the
+   the permanent Tolino Bridge: sign in on its local dashboard, enter the
    helper LAN URL (for example http://192.168.1.10:8081) and API key, set the
    download folder, acknowledge the warning, and save. No Thalia tokens
    are copied to the reader. Then continue with Load cloud library.
+   Keep Docker running for library access, downloads and session renewal.
+   Enter the API URL (normally port 8081), not the dashboard (8080) or
+   visible login browser (6080). Actual reader progress sync additionally
+   requires the CrossPoint Sync connector and separate reader Sync settings.
 5. Alternatively choose "Imported webreader session". In your computer
    browser, open webreader.mytolino.com and Developer Tools
    > Network before signing in through Thalia.de.
@@ -63,6 +67,15 @@ An unreadable SD listing or an empty existing file blocks the download.
 The unmodified native catalog does not have this check: Fetch can overwrite an
 existing book and clear its reader cache. Use the browser check to avoid repeat
 downloads on stock firmware.
+
+For **containerless native use**, run the
+[one-time browser setup](../../tools/setup/README.md) and install matching
+custom firmware. The reader then performs its own token refresh, catalog,
+downloads and exact **manual Sync Progress**, without the helper or a Sync
+server. Direct mode uses its own `direct-session.json`, not this browser
+plugin's imported-session mode; do not make both refresh the same session.
+Cloud failures remain errors rather than silently switching transport.
+Read the setup's SD storage, local file-server and runtime TLS warnings.
 
 The optional [X4 Pro custom firmware](../../tools/firmware/README.md), based on
 original CrossPoint 2.0.0, enables **Alle fehlenden EPUBs laden** in this native

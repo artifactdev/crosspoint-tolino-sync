@@ -51,7 +51,7 @@ index 8c73ee7..d5c0e88 100644
  STR_FEED_UNAUTHORIZED: "Benutzername und Passwort überprüfen"
  STR_FEED_REDIRECTED: "Der Server wurde umgeleitet. Versuche es mit der https:// URL"
 diff --git a/platformio.ini b/platformio.ini
-index f96f663..1139973 100644
+index f96f663..78efcdc 100644
 --- a/platformio.ini
 +++ b/platformio.ini
 @@ -4,7 +4,7 @@ build_cache_dir = .cache
@@ -59,15 +59,23 @@ index f96f663..1139973 100644
  
  [crosspoint]
 -version = 2.0.0
-+version = 2.0.0-tolino.1
++version = 2.0.0-tolino.2
  
  [base]
  platform = https://github.com/pioarduino/platform-espressif32/releases/download/55.03.311/platform-espressif32.zip
 diff --git a/src/activities/plugins/PluginCatalogActivity.cpp b/src/activities/plugins/PluginCatalogActivity.cpp
-index fcf3ab3..107a913 100644
+index fcf3ab3..989574e 100644
 --- a/src/activities/plugins/PluginCatalogActivity.cpp
 +++ b/src/activities/plugins/PluginCatalogActivity.cpp
-@@ -328,6 +328,11 @@ bool PluginCatalogActivity::loadManifest() {
+@@ -33,6 +33,7 @@
+ #include "components/UITheme.h"
+ #include "network/HttpDownloader.h"
+ #include "network/ProtectedPaths.h"
++#include "network/TolinoDirect.h"
+ #include "util/BookCacheUtils.h"
+ #include "util/FirmwareIdentity.h"
+ #include "util/PluginEvents.h"
+@@ -328,6 +329,11 @@ bool PluginCatalogActivity::loadManifest() {
    manifest.dlUser = dl["username"] | "";
    manifest.dlPass = dl["password"] | "";
    manifest.destDir = pluginhttp::inPluginDir(pluginDir, dl["dest_dir"] | "");
@@ -79,7 +87,29 @@ index fcf3ab3..107a913 100644
    if (!manifest.destDir.empty() && !protectedpaths::isPluginPath(manifest.destDir)) {
      LOG_ERR("PCAT", "dest_dir outside plugin space: %s", manifest.destDir.c_str());
      return false;
-@@ -855,10 +860,12 @@ int PluginCatalogActivity::rowCount() const {
+@@ -624,6 +630,7 @@ void PluginCatalogActivity::enterCatalog() {
+     fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
+     return;
+   }
++  directTolino = pickerReturnName == "tolino-sync" && tolino::configured();
+   requestUpdate();
+   checkAndConnectWifi();
+ }
+@@ -765,6 +772,13 @@ bool PluginCatalogActivity::refreshCredentialToken() {
+ }
+ 
+ bool PluginCatalogActivity::fetchBrowseResponse() {
++  if (directTolino) {
++    if (tolino::catalog(BROWSE_TMP_PATH, bulkRunning)) return true;
++    fail(StrId::STR_FETCH_FEED_FAILED);
++    errorMessage = tolino::error();
++    requestUpdate();
++    return false;
++  }
+   loadConfig();
+   if (!loadToken() && !(manifest.hasPasswordGrant() && refreshCredentialToken())) {
+     state = State::NO_TOKEN;
+@@ -855,10 +869,12 @@ int PluginCatalogActivity::rowCount() const {
      return static_cast<int>(installedPlugins.size()) + (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
    if (state == State::LIST_PICKER) return static_cast<int>(manifest.browseLists.size());
    if (state != State::BROWSING) return 0;
@@ -93,7 +123,15 @@ index fcf3ab3..107a913 100644
    // Search overrides the list view, reusing the browse url when unspecified.
    if (searchActive) return pick(manifest.searchUrl, manifest.browseReq.url);
    if (currentList < 0 || currentList >= static_cast<int>(manifest.browseLists.size())) return manifest.browseReq.url;
-@@ -1089,6 +1096,164 @@ void PluginCatalogActivity::downloadItem(const int itemIndex) {
+@@ -872,6 +888,7 @@ const std::string& PluginCatalogActivity::activeBrowseBody() const {
+ }
+ 
+ plugincatalogpaging::Paging PluginCatalogActivity::browsePaging() const {
++  if (directTolino) return plugincatalogpaging::Paging::Static;
+   return plugincatalogpaging::pagingOf(activeBrowseUrl(), activeBrowseBody(), manifest.browseReq.headers);
+ }
+ 
+@@ -1089,6 +1106,164 @@ void PluginCatalogActivity::downloadItem(const int itemIndex) {
    finishDownload(result);
  }
  
@@ -258,7 +296,7 @@ index fcf3ab3..107a913 100644
  void PluginCatalogActivity::downloadFinished(const bool cancelled) {
    state = cancelled ? State::BROWSING : State::DONE;
    requestUpdate();
-@@ -1177,6 +1342,7 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBundle(const Item&
+@@ -1177,6 +1352,7 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBundle(const Item&
  }
  
  HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& item) {
@@ -266,7 +304,7 @@ index fcf3ab3..107a913 100644
    // Resolve the file URL: either the template itself, or one API hop away.
    std::string fileUrl;
    // The file GET carries the download headers unless url_path answered with a
-@@ -1209,6 +1375,10 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
+@@ -1209,6 +1385,10 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
    const char* folder = folderDir.c_str();
    bool haveFolder = folder[0] != '\0';
    if (haveFolder && !Storage.exists(folder) && !Storage.mkdir(folder)) {
@@ -277,7 +315,7 @@ index fcf3ab3..107a913 100644
      LOG_ERR("PCAT", "mkdir failed for %s, using SD root", folder);
      haveFolder = false;
    }
-@@ -1230,6 +1400,14 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
+@@ -1230,6 +1410,18 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
      LOG_ERR("PCAT", "unsafe download dest rejected: %s", dest.c_str());
      return HttpDownloader::FILE_ERROR;
    }
@@ -289,10 +327,14 @@ index fcf3ab3..107a913 100644
 +    LOG_INF("PCAT", "Existing book retained: %s", dest.c_str());
 +    return HttpDownloader::OK;
 +  }
++  if (directTolino) {
++    if (!tolino::downloadUrl(item.id, fileUrl)) return HttpDownloader::HTTP_ERROR;
++    sendDownloadHeaders = false;
++  }
  
    const auto fetchFile = [&] {
      const std::vector<HttpDownloader::Header> fileHeaders =
-@@ -1264,12 +1442,15 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
+@@ -1264,12 +1456,15 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
      // not climb out of the tree or land on a credential store.
      if (!protectedpaths::isPluginPath(path)) {
        LOG_ERR("PCAT", "unsafe sidecar path rejected: %s", path.c_str());
@@ -309,7 +351,7 @@ index fcf3ab3..107a913 100644
      }
    }
  
-@@ -1467,6 +1648,11 @@ void PluginCatalogActivity::activateIndex(const int index) {
+@@ -1467,6 +1662,11 @@ void PluginCatalogActivity::activateIndex(const int index) {
    }
    // The pager rows bracket the items: "Previous page" ahead of them past
    // page 1, "Next page" after them while more pages exist.
@@ -321,7 +363,7 @@ index fcf3ab3..107a913 100644
    const int itemIndex = index - (prevRowVisible() ? 1 : 0);
    if (itemIndex == -1 || (nextRowVisible() && itemIndex == static_cast<int>(items.size()))) {
      app.clearTapFlash();
-@@ -1793,6 +1979,7 @@ void PluginCatalogActivity::rebuildRowItems() {
+@@ -1793,6 +1993,7 @@ void PluginCatalogActivity::rebuildRowItems() {
        addRow(entry.title.c_str(), entry.author.c_str(), entry.isDir ? ">" : entry.status.c_str());
      }
      if (nextRowVisible()) addRow(tr(STR_NEXT_PAGE), nullptr, ">");
@@ -330,7 +372,7 @@ index fcf3ab3..107a913 100644
  }
  
 diff --git a/src/activities/plugins/PluginCatalogActivity.h b/src/activities/plugins/PluginCatalogActivity.h
-index 225c7fb..2682f85 100644
+index 225c7fb..39b8eec 100644
 --- a/src/activities/plugins/PluginCatalogActivity.h
 +++ b/src/activities/plugins/PluginCatalogActivity.h
 @@ -105,6 +105,9 @@ class PluginCatalogActivity final : public CatalogActivity {
@@ -343,18 +385,19 @@ index 225c7fb..2682f85 100644
      // Bundle item fields: base URL and relative paths, installed under destDir/subdir.
      std::string bundleBasePath, bundleFilesPath, bundleSubdir;
      bool isBundle() const { return !bundleFilesPath.empty(); }
-@@ -160,6 +163,10 @@ class PluginCatalogActivity final : public CatalogActivity {
+@@ -160,6 +163,11 @@ class PluginCatalogActivity final : public CatalogActivity {
    // browseListsUrl was fetched, or failed while fixed lists remain to show.
    bool listIndexLoaded = false;
    std::string searchQuery;
 +  bool bulkRunning = false;
++  bool directTolino = false;
 +  bool lastDownloadSkipped = false;
 +  size_t bulkDownloaded = 0, bulkSkipped = 0;
 +  std::string bulkTitle, bulkNotice;
    bool searchActive = false;
    // Reuse browse TLS; release in the picker and before a single-file download.
    std::unique_ptr<freeink::SecureHttpClient> session;
-@@ -234,6 +241,9 @@ class PluginCatalogActivity final : public CatalogActivity {
+@@ -234,6 +242,9 @@ class PluginCatalogActivity final : public CatalogActivity {
    bool loadItemDetails(int itemIndex, ItemDetails& details);
    void showItemDetails(int itemIndex);
    void downloadItem(int itemIndex);
@@ -364,3 +407,867 @@ index 225c7fb..2682f85 100644
    HttpDownloader::DownloadError downloadBundle(const Item& item);
    HttpDownloader::DownloadError downloadBook(const Item& item);
    void beginAuth();
+diff --git a/src/activities/reader/EpubReaderActivity.cpp b/src/activities/reader/EpubReaderActivity.cpp
+index 2c3bda6..7e3f382 100644
+--- a/src/activities/reader/EpubReaderActivity.cpp
++++ b/src/activities/reader/EpubReaderActivity.cpp
+@@ -57,6 +57,7 @@
+ #include "clippings/ClippingsManager.h"
+ #include "components/UITheme.h"
+ #include "fontIds.h"
++#include "network/TolinoDirect.h"
+ #include "util/BookmarkUtil.h"
+ #include "util/ButtonNavigator.h"
+ #include "util/ScreenshotUtil.h"
+@@ -1303,7 +1304,7 @@ unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
+     case CrossPointSettings::LP_MENU_FOOTNOTES:
+       return ReaderUtils::BOOKMARK_HOLD_MS;
+     case CrossPointSettings::LP_MENU_KOSYNC:
+-      return KOREADER_STORE.hasCredentials() ? ReaderUtils::GO_HOME_MS : 0;
++      return KOREADER_STORE.hasCredentials() || tolino::ownsBook(epub->getPath()) ? ReaderUtils::GO_HOME_MS : 0;
+     case CrossPointSettings::LP_MENU_READER_MENU:
+     case CrossPointSettings::LP_MENU_DISABLED:
+     default:
+@@ -1317,7 +1318,7 @@ bool EpubReaderActivity::launchKOReaderSync() {
+   // Without a KOReader server the sync activity only brings the device online
+   // and drains that outbox; a failed join exits back to the reader with the
+   // events still queued.
+-  if (!KOREADER_STORE.hasCredentials()) {
++  if (!KOREADER_STORE.hasCredentials() && !tolino::ownsBook(epub->getPath())) {
+     activityManager.replaceActivity(std::make_unique<KOReaderSyncActivity>(
+         renderer, mappedInput, epub->getPath(), getCurrentPosition(), SavedProgressPosition{}, "",
+         /*pluginEventsOnly=*/true));
+diff --git a/src/activities/reader/EpubReaderMenuActivity.cpp b/src/activities/reader/EpubReaderMenuActivity.cpp
+index 06ecd72..d999817 100644
+--- a/src/activities/reader/EpubReaderMenuActivity.cpp
++++ b/src/activities/reader/EpubReaderMenuActivity.cpp
+@@ -10,6 +10,7 @@
+ #include "MappedInputManager.h"
+ #include "ReaderUtils.h"
+ #include "components/UITheme.h"
++#include "network/TolinoDirect.h"
+ #include "util/PluginEvents.h"
+ #include "util/SlideSwitch.h"
+ 
+@@ -95,7 +96,7 @@ void EpubReaderMenuActivity::buildMenuItems(std::vector<MenuItem>& items, const
+   items.push_back({MenuAction::SCREENSHOT, StrId::STR_SCREENSHOT_BUTTON});
+   items.push_back({MenuAction::DISPLAY_QR, StrId::STR_DISPLAY_QR});
+   items.push_back({MenuAction::GO_HOME, StrId::STR_GO_HOME_BUTTON});
+-  bool canSync = KOREADER_STORE.hasCredentials();
++  bool canSync = KOREADER_STORE.hasCredentials() || tolino::configured();
+   for (size_t event = 0; !canSync && event < static_cast<size_t>(pluginevents::Event::COUNT); ++event) {
+     canSync = pluginevents::anySubscriber(static_cast<pluginevents::Event>(event));
+   }
+diff --git a/src/activities/reader/KOReaderSyncActivity.cpp b/src/activities/reader/KOReaderSyncActivity.cpp
+index 75cd990..1424281 100644
+--- a/src/activities/reader/KOReaderSyncActivity.cpp
++++ b/src/activities/reader/KOReaderSyncActivity.cpp
+@@ -25,6 +25,7 @@
+ #include "components/UITheme.h"
+ #include "components/UiAppHelpers.h"  // list icons for the compare rows
+ #include "fontIds.h"
++#include "network/TolinoDirect.h"
+ #include "network/WifiPowerSaveGuard.h"
+ #include "util/PluginEvents.h"
+ #include "util/PluginHttp.h"
+@@ -174,7 +175,7 @@ void KOReaderSyncActivity::performSync() {
+ 
+   LOG_DBG("KOSync", "Document hash (%s): %s", matchMethodName(primaryMethod), documentHash.c_str());
+ 
+-  if (KOREADER_STORE.getSyncClippings()) {
++  if (!directTolino && KOREADER_STORE.getSyncClippings()) {
+     {
+       RenderLock lock(*this);
+       statusMessage = tr(STR_SYNCING_CLIPPINGS);
+@@ -207,14 +208,15 @@ void KOReaderSyncActivity::performSync() {
+ 
+   // Fetch remote progress. In smart mode, retain the alternate document-id
+   // record until both records can be mapped after the Epub is reloaded.
+-  auto result = KOReaderSyncClient::getProgress(documentHash, remoteProgress);
++  auto result = directTolino ? tolino::pull(epubPath, remoteProgress)
++                             : KOReaderSyncClient::getProgress(documentHash, remoteProgress);
+   LOG_DBG("KOSync", "Primary remote (%s): result=%d http=%d doc=%s local=%.6f remote=%.6f xpath=%s",
+           matchMethodName(primaryMethod), result, KOReaderSyncClient::lastHttpCode, documentHash.c_str(),
+           localProgress.percentage, remoteProgress.percentage, remoteProgress.progress.c_str());
+ 
+   KOReaderProgress alternateProgress;
+   bool hasAlternateProgress = false;
+-  if (smartSyncEnabled()) {
++  if (!directTolino && smartSyncEnabled()) {
+     const DocumentMatchMethod altMethod = alternateMatchMethod(primaryMethod);
+     const std::string altHash = calculateDocumentHashForMethod(epubPath, altMethod);
+     if (!altHash.empty() && altHash != documentHash) {
+@@ -259,7 +261,7 @@ void KOReaderSyncActivity::performSync() {
+     {
+       RenderLock lock(*this);
+       state = SYNC_FAILED;
+-      statusMessage = KOReaderSyncClient::errorString(result);
++      statusMessage = directTolino ? tolino::error() : KOReaderSyncClient::errorString(result);
+     }
+     requestUpdate(true);
+     return;
+@@ -313,6 +315,15 @@ void KOReaderSyncActivity::performSync() {
+     }
+   }
+ 
++  if (directTolino && !remotePosition.hasVisibleTextOffset) {
++    {
++      RenderLock lock(*this);
++      state = SYNC_FAILED;
++      statusMessage = "Exact Tolino position cannot be applied; no percentage fallback.";
++    }
++    requestUpdate(true);
++    return;
++  }
+   const ProgressComparison comparison =
+       compareProgress(localPosition, localProgress.percentage, remotePosition, remoteProgress.percentage);
+   if (smartSyncEnabled()) {
+@@ -420,7 +431,7 @@ void KOReaderSyncActivity::performUpload() {
+   {
+     // Restore power-save before esp_wifi_stop below; set_ps on a stopped radio fails.
+     WifiPowerSaveGuard psGuard;
+-    result = KOReaderSyncClient::updateProgress(progress);
++    result = directTolino ? tolino::push(epubPath, progress) : KOReaderSyncClient::updateProgress(progress);
+   }
+ 
+   // Drop the radio while user reads the result; full teardown happens at silent reboot.
+@@ -430,7 +441,7 @@ void KOReaderSyncActivity::performUpload() {
+     {
+       RenderLock lock(*this);
+       state = SYNC_FAILED;
+-      statusMessage = KOReaderSyncClient::errorString(result);
++      statusMessage = directTolino ? tolino::error() : KOReaderSyncClient::errorString(result);
+     }
+     requestUpdate();
+     return;
+@@ -452,8 +463,10 @@ void KOReaderSyncActivity::onEnter() {
+   app.on(ACTION_ROW, &KOReaderSyncActivity::onResultRow, this);
+   app.setScreen(&KOReaderSyncActivity::resultScreen, this);
+ 
++  directTolino = tolino::ownsBook(epubPath);
++  if (directTolino) pluginEventsOnly = false;
+   // Check for credentials first (plugin-events-only mode needs none).
+-  if (!pluginEventsOnly && !KOREADER_STORE.hasCredentials()) {
++  if (!directTolino && !pluginEventsOnly && !KOREADER_STORE.hasCredentials()) {
+     state = NO_CREDENTIALS;
+     requestUpdate();
+     return;
+diff --git a/src/activities/reader/KOReaderSyncActivity.h b/src/activities/reader/KOReaderSyncActivity.h
+index 7e83fae..3f00f62 100644
+--- a/src/activities/reader/KOReaderSyncActivity.h
++++ b/src/activities/reader/KOReaderSyncActivity.h
+@@ -79,6 +79,7 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
+   // Reuses the KOReader WiFi connect/drain/return flow without a server: flush
+   // plugged-outbox events instead of syncing progress.
+   bool pluginEventsOnly = false;
++  bool directTolino = false;
+ 
+   void onWifiSelectionComplete(bool success);
+   void performSync();
+diff --git a/src/network/TolinoDirect.cpp b/src/network/TolinoDirect.cpp
+new file mode 100644
+index 0000000..d90e3b7
+--- /dev/null
++++ b/src/network/TolinoDirect.cpp
+@@ -0,0 +1,411 @@
++#include "TolinoDirect.h"
++
++#include <HalStorage.h>
++#include <Logging.h>
++#include <TrustedTime.h>
++#include <base64.h>
++
++#include <cmath>
++#include <ctime>
++#include <map>
++
++#include "HttpDownloader.h"
++#include "KOReaderDocumentId.h"
++#include "TolinoPoint.h"
++#include "util/PluginHttp.h"
++
++namespace {
++std::string lastError;
++std::string accessToken, activeRefresh, hardwareId;
++std::map<std::string, std::string> verifiedBooks;
++unsigned long tokenAt = 0, tokenLifetime = 0;
++constexpr const char* BOSH = "https://bosh.pageplace.de/bosh/rest";
++constexpr size_t MAX_JSON = 256 * 1024;
++
++bool fail(const std::string& message) {
++  lastError = message;
++  LOG_ERR("TOLINO", "%s", message.c_str());
++  return false;
++}
++
++bool readJson(const std::string& path, JsonDocument& doc, size_t limit = 16384) {
++  std::string raw;
++  return Storage.readFileToString("TOLINO", path, limit, raw) && deserializeJson(doc, raw) == DeserializationError::Ok;
++}
++
++bool saveSession(JsonDocument& doc) {
++  const std::string temporary = std::string(tolino::SESSION_PATH) + ".tmp";
++  HalFile file;
++  if (!Storage.openFileForWrite("TOLINO", temporary, file)) return fail("Cannot persist Tolino session.");
++  const size_t size = measureJson(doc);
++  const bool written = serializeJson(doc, file) == size;
++  file.flush();
++  file.close();
++  const std::string backup = std::string(tolino::SESSION_PATH) + ".bak";
++  if (!written) {
++    Storage.remove(temporary.c_str());
++    return fail("Cannot save rotated Tolino session; reconnect before continuing.");
++  }
++  if (Storage.exists(backup.c_str()) && !Storage.remove(backup.c_str()))
++    return fail("Cannot remove stale Tolino session backup.");
++  if (!Storage.rename(tolino::SESSION_PATH, backup.c_str()))
++    return fail("Cannot back up Tolino session; write refused.");
++  if (!Storage.rename(temporary.c_str(), tolino::SESSION_PATH)) {
++    if (!Storage.rename(backup.c_str(), tolino::SESSION_PATH))
++      return fail("Cannot restore Tolino session backup; run setup again.");
++    return fail("Cannot replace Tolino session; run setup again.");
++  }
++  if (!Storage.remove(backup.c_str())) return fail("Cannot remove old Tolino session backup.");
++  return true;
++}
++
++std::string endpoint(const std::string& url) {
++#ifdef SIMULATOR
++  const char* origin = getenv("TOLINO_SIM_ORIGIN");
++  if (origin && std::string(origin).rfind("http://127.0.0.1:", 0) == 0) {
++    if (url.rfind(BOSH, 0) == 0) return std::string(origin) + url.substr(std::string(BOSH).size());
++    if (url == "https://www.thalia.de/auth/oauth2/token") return std::string(origin) + "/token";
++  }
++#endif
++  return url;
++}
++
++bool decodeResponse(int status, const String& raw, JsonDocument& doc) {
++  if (status != 200) return fail("Tolino request failed (HTTP " + std::to_string(status) + ").");
++  if (deserializeJson(doc, raw) != DeserializationError::Ok) return fail("Invalid or oversized Tolino response.");
++  return true;
++}
++
++bool token(bool force = false) {
++  JsonDocument session;
++  if (!readJson(tolino::SESSION_PATH, session) || session["transportAccepted"] != true ||
++      !session["hardwareId"].is<const char*>() || !session["refreshToken"].is<const char*>())
++    return fail("Run the local Tolino setup and accept the SD/transport warning.");
++  const std::string refresh = session["refreshToken"].as<std::string>();
++  const std::string hardware = session["hardwareId"].as<std::string>();
++  if (refresh.empty() || hardware.empty() || refresh.find_first_of("\r\n") != std::string::npos ||
++      hardware.find_first_of("\r\n") != std::string::npos)
++    return fail("Invalid Tolino session; run setup again.");
++  if (!force && refresh == activeRefresh && hardware == hardwareId && !accessToken.empty() &&
++      millis() - tokenAt < tokenLifetime)
++    return true;
++  String raw;
++  const int status =
++      pluginhttp::request(nullptr, endpoint("https://www.thalia.de/auth/oauth2/token"), "POST",
++                          "client_id=webreader&grant_type=refresh_token&scope=SCOPE_BOSH&refresh_token=" +
++                              pluginhttp::urlEncodeQuery(refresh),
++                          {{"Content-Type", "application/x-www-form-urlencoded"}}, raw, 16384);
++  JsonDocument response;
++  if (!decodeResponse(status, raw, response)) return false;
++  if (!response["access_token"].is<const char*>() || !response["expires_in"].is<unsigned long>() ||
++      response["expires_in"].as<unsigned long>() <= 60)
++    return fail("Invalid token response; run Tolino setup again.");
++  accessToken = response["access_token"].as<std::string>();
++  if (accessToken.empty() || accessToken.find_first_of("\r\n") != std::string::npos ||
++      (response["refresh_token"].is<const char*>() && response["refresh_token"].as<std::string>().empty()))
++    return fail("Invalid token response; session not saved.");
++  hardwareId = hardware;
++  if (response["refresh_token"].is<const char*>()) session["refreshToken"] = response["refresh_token"];
++  if (!saveSession(session)) {
++    accessToken.clear();
++    return false;
++  }
++  activeRefresh = session["refreshToken"].as<std::string>();
++  tokenAt = millis();
++  tokenLifetime = std::min(response["expires_in"].as<unsigned long>() - 60, 86400UL) * 1000UL;
++  return true;
++}
++
++bool api(const std::string& path, const char* method, const std::string& body, JsonDocument& response) {
++  if (!token()) return false;
++  for (int attempt = 0; attempt < 2; ++attempt) {
++    String raw;
++    const int status = pluginhttp::request(nullptr, endpoint(std::string(BOSH) + path), method, body,
++                                           {{"t_auth_token", accessToken},
++                                            {"hardware_id", hardwareId},
++                                            {"reseller_id", "3"},
++                                            {"client_type", "TOLINO_WEBREADER"},
++                                            {"client_version", "4.4.1"},
++                                            {"Content-Type", "application/json"},
++                                            {"Accept", "application/json"}},
++                                           raw, MAX_JSON);
++    if ((status == 401 || status == 403) && attempt == 0) {
++      if (!token(true)) return false;
++      continue;
++    }
++    return decodeResponse(status, raw, response);
++  }
++  return fail("Tolino session expired; run local setup again.");
++}
++
++bool supported(JsonVariantConst book) {
++  const auto meta = book["epubMetaData"];
++  const auto deliverable = meta["deliverable"][0];
++  if (deliverable["contentFormat"] != "application/epub+zip") return false;
++  if (!deliverable["contentEncrypted"].isNull() && deliverable["contentEncrypted"] != false) return false;
++  for (JsonVariantConst value : {book["contentProtectionType"], meta["contentProtectionType"], meta["protectionType"],
++                                 deliverable["contentProtectionType"]}) {
++    std::string protection = value.as<std::string>();
++    for (char& c : protection) c = toupper(static_cast<unsigned char>(c));
++    if (!value.isNull() && !protection.empty() && protection != "NONE" && protection != "UNPROTECTED" &&
++        protection != "WATERMARK" && protection != "WATERMARKV1")
++      return false;
++  }
++  return true;
++}
++
++bool inventory(JsonDocument& doc) {
++  if (!api("/inventory/delta?strip=true", "GET", "", doc)) return false;
++  if (!doc["PublicationInventory"]["ebook"].is<JsonArray>() || !doc["PublicationInventory"]["edata"].is<JsonArray>())
++    return fail("Unrecognized Tolino inventory.");
++  return true;
++}
++
++std::string pointer(const std::string& value) {
++  std::string result;
++  for (char c : value) result += c == '~' ? "~0" : c == '/' ? "~1" : std::string(1, c);
++  return result;
++}
++
++struct Cloud {
++  std::string revision, slot, bookmarkRevision, position;
++  double percentage = 0, modified = 0;
++  bool exists = false;
++};
++
++bool decodeCloud(const JsonDocument& doc, const std::string& publication, Cloud& result) {
++  if (!doc["revision"].is<const char*>() || !doc["patches"].is<JsonArrayConst>())
++    return fail("Unrecognized Tolino reading-state response.");
++  result = Cloud{};
++  result.revision = doc["revision"].as<std::string>();
++  if (result.revision.empty()) return fail("Missing Tolino cloud revision.");
++  const std::string parent = "/publications/" + pointer(publication);
++  const std::string prefix = parent + "/bookmark/";
++  std::map<std::string, JsonVariantConst> slots;
++  for (JsonVariantConst patch : doc["patches"].as<JsonArrayConst>()) {
++    const std::string path = patch["path"].as<std::string>();
++    const std::string op = patch["op"].as<std::string>();
++    if (op != "add" && op != "replace" && op != "remove") return fail("Unknown Tolino patch operation.");
++    if (path == "/publications" || path == parent || path == parent + "/bookmark") {
++      if (op != "remove") return fail("Unsupported Tolino bookmark snapshot.");
++      slots.clear();
++    } else if (path.rfind(prefix, 0) == 0) {
++      if (path.substr(prefix.size()).find('/') != std::string::npos) return fail("Invalid Tolino bookmark path.");
++      if (op == "remove")
++        slots.erase(path);
++      else
++        slots[path] = patch["value"];
++    }
++  }
++  for (const auto& entry : slots) {
++    const auto value = entry.second;
++    const double modified = value["modified"].as<double>(), percentage = value["progress"].as<double>();
++    if (!value["modified"].is<double>() || !value["progress"].is<double>() || !std::isfinite(modified) ||
++        !std::isfinite(percentage) || modified < 0 || percentage < 0 || percentage > 1 ||
++        !value["position"].is<const char*>())
++      return fail("Invalid Tolino bookmark.");
++    if (!result.exists || modified > result.modified) {
++      result.exists = true;
++      result.slot = entry.first;
++      result.bookmarkRevision = value["revision"].as<std::string>();
++      result.modified = modified;
++      result.percentage = percentage;
++      result.position = value["position"].as<std::string>();
++    }
++  }
++  return true;
++}
++
++bool cloud(const std::string& publication, Cloud& result) {
++  JsonDocument doc;
++  return api("/sync-data?paths=publications", "PATCH", "{\"revision\":null,\"patches\":[]}", doc) &&
++         decodeCloud(doc, publication, result);
++}
++
++bool identity(const std::string& path, std::string& id, std::string& publication) {
++  JsonDocument doc;
++  if (!readJson(path + ".meta.json", doc, 2048) || !doc["tolino_identifier"].is<const char*>() ||
++      !doc["tolino_publication_id"].is<const char*>())
++    return fail("Missing Tolino book identity; use the original downloaded EPUB and sidecar.");
++  id = doc["tolino_identifier"].as<std::string>();
++  publication = doc["tolino_publication_id"].as<std::string>();
++  return !id.empty() && !publication.empty();
++}
++
++bool verifyBook(const std::string& path, const std::string& id) {
++  const std::string hash = KOReaderDocumentId::calculate(path);
++  if (hash.empty() || !token()) return fail("Cannot verify Tolino EPUB identity.");
++  const std::string key = hardwareId + "\n" + id + "\n" + path;
++  const auto cached = verifiedBooks.find(key);
++  if (cached != verifiedBooks.end() && cached->second == hash) return true;
++  std::string url;
++  if (!tolino::downloadUrl(id, url)) return false;
++  constexpr const char* temporary = "/.crosspoint/tolino-edition-check.epub";
++  if (HttpDownloader::downloadToFile(url, temporary) != HttpDownloader::OK) {
++    Storage.remove(temporary);
++    return fail("Cannot verify cloud EPUB edition; no reading position changed.");
++  }
++  const std::string remoteHash = KOReaderDocumentId::calculate(temporary);
++  const bool removed = Storage.remove(temporary);
++  if (!removed) return fail("Cannot clean up Tolino edition-check file.");
++  if (hash != remoteHash) return fail("Tolino EPUB edition mismatch; position sync refused.");
++  if (verifiedBooks.size() >= 16) verifiedBooks.clear();
++  verifiedBooks[key] = hash;
++  return true;
++}
++}  // namespace
++
++namespace tolino {
++bool configured() {
++  return Storage.exists(SESSION_PATH) || Storage.exists((std::string(SESSION_PATH) + ".bak").c_str()) ||
++         Storage.exists((std::string(SESSION_PATH) + ".tmp").c_str());
++}
++bool ownsBook(const std::string& path) {
++  if (!configured()) return false;
++  JsonDocument doc;
++  return readJson(path + ".meta.json", doc, 2048) && doc["tolino_identifier"].is<const char*>();
++}
++const std::string& error() { return lastError; }
++
++bool catalog(const char* destination, bool supportedOnly) {
++  JsonDocument source;
++  if (!inventory(source)) return false;
++  JsonDocument reading;
++  if (!api("/sync-data?paths=publications", "PATCH", "{\"revision\":null,\"patches\":[]}", reading)) return false;
++  JsonDocument result;
++  JsonArray books = result["books"].to<JsonArray>();
++  std::map<std::string, bool> seen;
++  for (const char* collection : {"ebook", "edata"}) {
++    for (JsonVariantConst book : source["PublicationInventory"][collection].as<JsonArrayConst>()) {
++      const auto meta = book["epubMetaData"];
++      const std::string id = meta["identifier"].as<std::string>(), title = meta["title"].as<std::string>();
++      if (id.empty() || title.empty()) return fail("Cloud book identity/title missing.");
++      if (seen.count(id)) continue;
++      seen[id] = true;
++      const bool allowed = supported(book);
++      if (supportedOnly && !allowed) continue;
++      const std::string publication = book["publicationId"].is<const char*>() ? book["publicationId"].as<std::string>()
++                                      : meta["publicationId"].is<const char*>()
++                                          ? meta["publicationId"].as<std::string>()
++                                          : id;
++      JsonDocument sidecar;
++      sidecar["tolino_identifier"] = id;
++      sidecar["tolino_publication_id"] = publication;
++      sidecar["tolino_id"] = id;
++      std::string serialized;
++      serializeJson(sidecar, serialized);
++      JsonObject row = books.add<JsonObject>();
++      row["id"] = id;
++      row["title"] = title + (allowed ? "" : " [DRM / unsupported]");
++      std::string author;
++      for (JsonVariantConst a : meta["author"].as<JsonArrayConst>()) {
++        if (!author.empty()) author += ", ";
++        author += a["name"].as<std::string>();
++      }
++      row["author"] = author;
++      row["sidecar"] = serialized;
++      Cloud position;
++      if (!decodeCloud(reading, publication, position)) return false;
++      std::string description = position.exists ? "Tolino Cloud: " + std::to_string(position.percentage * 100) + "%.\n"
++                                                : "No Tolino cloud position yet.\n";
++      description += allowed ? "Direct cloud EPUB. Sync Progress reads/writes Tolino directly."
++                             : "Unsupported format or DRM; no download.";
++      row["description"] = description;
++    }
++  }
++  HalFile file;
++  if (!Storage.openFileForWrite("TOLINO", destination, file)) return fail("Cannot save native Tolino catalog.");
++  const bool ok = serializeJson(result, file) == measureJson(result);
++  file.flush();
++  file.close();
++  return ok || fail("Incomplete native Tolino catalog write.");
++}
++
++bool downloadUrl(const std::string& identifier, std::string& url) {
++  JsonDocument source;
++  if (!inventory(source)) return false;
++  bool found = false;
++  for (const char* collection : {"ebook", "edata"}) {
++    for (JsonVariantConst book : source["PublicationInventory"][collection].as<JsonArrayConst>()) {
++      if (book["epubMetaData"]["identifier"] == identifier) {
++        if (!supported(book)) return fail("Unsupported EPUB or DRM; download refused.");
++        found = true;
++      }
++    }
++  }
++  if (!found) return fail("Book is not in the signed-in Tolino library.");
++  const std::string encoded = pluginhttp::urlEncodeQuery(base64::encode(identifier.c_str()).c_str());
++  JsonDocument doc;
++  if (!api("/cloud/downloadinfo/" + encoded + "/" + encoded + "/type/external-download", "GET", "", doc)) return false;
++  if (doc["DownloadInfo"]["format"] != "application/epub+zip") return fail("Tolino did not offer an EPUB.");
++  url = doc["DownloadInfo"]["contentUrl"].as<std::string>();
++  if (url.rfind("https://", 0) != 0 || url.find('@') != std::string::npos ||
++      url.find_first_of("\r\n") != std::string::npos)
++    return fail("Unsafe Tolino download URL.");
++#ifdef SIMULATOR
++  const char* origin = getenv("TOLINO_SIM_ORIGIN");
++  if (origin && std::string(origin).rfind("http://127.0.0.1:", 0) == 0 &&
++      url.rfind("https://tolino-fixture.invalid/", 0) == 0)
++    url = std::string(origin) + url.substr(std::string("https://tolino-fixture.invalid").size());
++#endif
++  return true;
++}
++
++KOReaderSyncClient::Error pull(const std::string& path, KOReaderProgress& progress) {
++  std::string id, publication;
++  Cloud state;
++  if (!identity(path, id, publication) || !cloud(publication, state)) return KOReaderSyncClient::SERVER_ERROR;
++  if (!state.exists) return KOReaderSyncClient::NOT_FOUND;
++  if (!verifyBook(path, id)) return KOReaderSyncClient::SERVER_ERROR;
++  if (!tolino::convertPoint(path, state.position, false, progress.progress))
++    return fail("Cloud position cannot be mapped exactly in this EPUB."), KOReaderSyncClient::JSON_ERROR;
++  progress.percentage = state.percentage;
++  progress.timestamp = static_cast<int64_t>(state.modified / 1000);
++  progress.device = "Tolino Cloud";
++  return KOReaderSyncClient::OK;
++}
++
++KOReaderSyncClient::Error push(const std::string& path, const KOReaderProgress& progress) {
++  std::string id, publication, point;
++  Cloud before;
++  if (!identity(path, id, publication) || !cloud(publication, before)) return KOReaderSyncClient::SERVER_ERROR;
++  if (!verifyBook(path, id)) return KOReaderSyncClient::SERVER_ERROR;
++  if (!std::isfinite(progress.percentage) || progress.percentage < 0 || progress.percentage > 1 ||
++      !tolino::convertPoint(path, progress.progress, true, point))
++    return fail("Reader position cannot be mapped exactly to Tolino."), KOReaderSyncClient::JSON_ERROR;
++  if (before.exists && before.position == point && std::abs(before.percentage - progress.percentage) < 0.0000001)
++    return KOReaderSyncClient::OK;
++  if (trustedtime::trustedNow() == 0 && !trustedtime::syncNow(10000))
++    return fail("Cannot establish a trusted clock for Tolino writes."), KOReaderSyncClient::SERVER_ERROR;
++  const auto now = static_cast<double>(trustedtime::trustedNow()) * 1000;
++  if (now < 1700000000000.0 || (before.exists && before.modified >= now))
++    return fail("Clock unavailable or newer cloud position exists; pull before retrying."),
++           KOReaderSyncClient::SERVER_ERROR;
++  Cloud fresh;
++  if (!cloud(publication, fresh)) return KOReaderSyncClient::SERVER_ERROR;
++  if (before.revision != fresh.revision || before.exists != fresh.exists || before.modified != fresh.modified)
++    return fail("Cloud position changed; pull before retrying."), KOReaderSyncClient::SERVER_ERROR;
++  if (before.exists && before.bookmarkRevision.empty())
++    return fail("Cloud bookmark revision missing; write refused."), KOReaderSyncClient::SERVER_ERROR;
++  JsonDocument body;
++  body["revision"] = fresh.revision;
++  JsonObject patch = body["patches"].to<JsonArray>().add<JsonObject>();
++  patch["op"] = before.exists ? "replace" : "add";
++  patch["path"] = before.exists ? before.slot : "/publications/" + pointer(publication) + "/bookmark";
++  JsonObject value = patch["value"].to<JsonObject>();
++  if (before.exists) value["revision"] = before.bookmarkRevision;
++  value["position"] = point;
++  value["progress"] = progress.percentage;
++  value["modified"] = now;
++  std::string serialized;
++  serializeJson(body, serialized);
++  JsonDocument response;
++  if (!api("/sync-data?paths=publications", "PATCH", serialized, response)) return KOReaderSyncClient::SERVER_ERROR;
++  Cloud verified;
++  if (!cloud(publication, verified)) return KOReaderSyncClient::SERVER_ERROR;
++  if (!verified.exists || verified.position != point || verified.modified != now ||
++      std::abs(verified.percentage - progress.percentage) > 0.0000001)
++    return fail("Tolino did not confirm the written position; pull before retrying."), KOReaderSyncClient::SERVER_ERROR;
++  return KOReaderSyncClient::OK;
++}
++}  // namespace tolino
+diff --git a/src/network/TolinoDirect.h b/src/network/TolinoDirect.h
+new file mode 100644
+index 0000000..823748b
+--- /dev/null
++++ b/src/network/TolinoDirect.h
+@@ -0,0 +1,18 @@
++#pragma once
++
++#include <ArduinoJson.h>
++
++#include <string>
++
++#include "KOReaderSyncClient.h"
++
++namespace tolino {
++constexpr const char* SESSION_PATH = "/.crosspoint/plugins/tolino-sync/direct-session.json";
++bool configured();
++bool ownsBook(const std::string& path);
++const std::string& error();
++bool catalog(const char* destination, bool supportedOnly);
++bool downloadUrl(const std::string& identifier, std::string& url);
++KOReaderSyncClient::Error pull(const std::string& epubPath, KOReaderProgress& progress);
++KOReaderSyncClient::Error push(const std::string& epubPath, const KOReaderProgress& progress);
++}  // namespace tolino
+diff --git a/src/network/TolinoPoint.cpp b/src/network/TolinoPoint.cpp
+new file mode 100644
+index 0000000..b72ecc9
+--- /dev/null
++++ b/src/network/TolinoPoint.cpp
+@@ -0,0 +1,247 @@
++#include "TolinoPoint.h"
++
++#include <Epub.h>
++#include <FsHelpers.h>
++#include <expat.h>
++
++#include <cstdio>
++#include <map>
++#include <vector>
++
++#include "util/PluginHttp.h"
++
++namespace {
++bool number(const std::string& text, size_t& out) {
++  if (text.empty() || text.size() > 8) return false;
++  out = 0;
++  for (char c : text) {
++    if (c < '0' || c > '9') return false;
++    out = out * 10 + c - '0';
++  }
++  return true;
++}
++
++bool byteOffset(const std::string& text, size_t requested, bool toCloud, size_t& converted) {
++  size_t characters = 0;
++  for (size_t byte = 0;;) {
++    if ((toCloud ? characters : byte) == requested) {
++      converted = toCloud ? byte : characters;
++      return true;
++    }
++    if (byte == text.size()) return false;
++    const unsigned char c = text[byte];
++    const size_t width = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : 4;
++    byte += width;
++    if (byte > text.size()) return false;
++    ++characters;
++  }
++}
++
++class Scanner : public Print {
++ public:
++  struct Frame {
++    std::string tag, point, xpath;
++    std::map<std::string, size_t> elements;
++    size_t children = 0, texts = 0;
++    bool hidden = false;
++  };
++  XML_Parser parser = nullptr;
++  std::vector<Frame> stack;
++  std::string wanted, found, text;
++  size_t offset = 0, total = 0;
++  bool toCloud = false, invalid = false, rootSeen = false, elementText = false;
++
++  Scanner(std::string wanted, size_t offset, bool toCloud)
++      : wanted(std::move(wanted)), offset(offset), toCloud(toCloud) {
++    parser = XML_ParserCreate(nullptr);
++    if (!parser) {
++      invalid = true;
++      return;
++    }
++    XML_SetUserData(parser, this);
++    XML_SetElementHandler(parser, start, end);
++    XML_SetCharacterDataHandler(parser, characters);
++    XML_SetCommentHandler(parser, comment);
++    XML_SetProcessingInstructionHandler(parser, instruction);
++    XML_SetCdataSectionHandler(parser, boundary, boundary);
++    XML_SetExternalEntityRefHandler(
++        parser, [](XML_Parser, const XML_Char*, const XML_Char*, const XML_Char*, const XML_Char*) -> int {
++          return XML_STATUS_ERROR;
++        });
++  }
++  ~Scanner() override {
++    if (parser) XML_ParserFree(parser);
++  }
++  size_t write(uint8_t c) override { return write(&c, 1); }
++  size_t write(const uint8_t* data, size_t length) override {
++    total += length;
++    if (invalid || total > 2 * 1024 * 1024 ||
++        XML_Parse(parser, reinterpret_cast<const char*>(data), length, false) == XML_STATUS_ERROR) {
++      invalid = true;
++      return 0;
++    }
++    return length;
++  }
++  bool finish() {
++    if (invalid || XML_Parse(parser, "", 0, true) == XML_STATUS_ERROR) return false;
++    flush();
++    return !invalid && rootSeen && !found.empty();
++  }
++  void match(const std::string& point, const std::string& xpath, bool hidden, bool isText) {
++    if (hidden) return;
++    const std::string& candidate = toCloud ? xpath : point;
++    if (candidate == wanted && !isText) {
++      if (offset == 0)
++        found = toCloud ? point + ":0" : xpath;
++      else if (!toCloud)
++        elementText = true;
++      else
++        invalid = true;  // XPath element offsets are not valid reader anchors.
++    }
++  }
++  void flush() {
++    if (text.empty() || stack.empty()) {
++      text.clear();
++      return;
++    }
++    const auto& parent = stack.back();
++    const std::string point = parent.point + "/" + std::to_string(parent.children);
++    const std::string xpath = parent.xpath + "/text()[" + std::to_string(parent.texts) + "]";
++    size_t converted = 0;
++    if (!parent.hidden && ((toCloud ? xpath : point) == wanted || elementText) && found.empty()) {
++      if (byteOffset(text, offset, toCloud, converted))
++        found = toCloud ? point + ":" + std::to_string(converted) : xpath + "." + std::to_string(converted);
++      else if (elementText && offset > text.size())
++        offset -= text.size();
++      else
++        invalid = true;
++    }
++    text.clear();
++  }
++  static Scanner& self(void* p) { return *static_cast<Scanner*>(p); }
++  static void start(void* p, const char* name, const char**) {
++    auto& s = self(p);
++    s.flush();
++    if (s.stack.size() >= 128) {
++      s.invalid = true;
++      return;
++    }
++    std::string tag = name;
++    if (const auto colon = tag.find(':'); colon != std::string::npos) tag.erase(0, colon + 1);
++    Frame f;
++    f.tag = tag;
++    if (s.stack.empty()) {
++      if (s.rootSeen || tag != "html") s.invalid = true;
++      s.rootSeen = true;
++      f.point = "/1";
++    } else {
++      auto& parent = s.stack.back();
++      f.point = parent.point + "/" + std::to_string(++parent.children);
++      const size_t index = ++parent.elements[tag];
++      f.xpath = parent.xpath;
++      if (!f.xpath.empty()) f.xpath += "/" + tag + "[" + std::to_string(index) + "]";
++      if (tag == "body" && parent.tag == "html") f.xpath = "/body";
++      f.hidden = parent.hidden;
++    }
++    f.hidden = f.hidden || tag == "head" || tag == "style" || tag == "script" || tag == "title" || tag == "rp";
++    s.match(f.point, f.xpath, f.hidden, false);
++    s.stack.push_back(std::move(f));
++  }
++  static void end(void* p, const char*) {
++    auto& s = self(p);
++    s.flush();
++    if (s.stack.empty()) {
++      s.invalid = true;
++      return;
++    }
++    if (s.stack.back().point == s.wanted && s.elementText) {
++      if (s.found.empty()) s.invalid = true;
++      s.elementText = false;
++    }
++    s.stack.pop_back();
++  }
++  static void characters(void* p, const char* value, int length) {
++    auto& s = self(p);
++    if (s.stack.empty() || length <= 0) return;
++    if (s.text.empty()) {
++      ++s.stack.back().children;
++      ++s.stack.back().texts;
++    }
++    if (s.text.size() + length > 128 * 1024) {
++      s.invalid = true;
++      return;
++    }
++    s.text.append(value, length);
++  }
++  static void comment(void* p, const char*) {
++    auto& s = self(p);
++    s.flush();
++    if (!s.stack.empty()) ++s.stack.back().children;
++  }
++  static void instruction(void* p, const char*, const char*) { self(p).flush(); }
++  static void boundary(void* p) { self(p).flush(); }
++};
++}  // namespace
++
++namespace tolino {
++bool convertPoint(const std::string& path, const std::string& source, bool toCloud, std::string& destination) {
++  Epub epub(path, "/.crosspoint");
++  epub.setupCacheDir();
++  if (!epub.load(false, true) || source.size() > 4096) return false;
++  int spine = -1;
++  std::string wanted;
++  size_t offset = 0;
++  if (toCloud) {
++    const std::string prefix = "/body/DocFragment[";
++    if (source.rfind(prefix, 0) != 0) return false;
++    const auto close = source.find(']', prefix.size());
++    size_t numberValue;
++    if (close == std::string::npos || !number(source.substr(prefix.size(), close - prefix.size()), numberValue) ||
++        numberValue == 0 || numberValue > static_cast<size_t>(epub.getSpineItemsCount()))
++      return false;
++    spine = numberValue - 1;
++    wanted = source.substr(close + 1);
++    const auto textOffset = wanted.rfind("].");
++    if (textOffset != std::string::npos) {
++      if (!number(wanted.substr(textOffset + 2), offset)) return false;
++      wanted.resize(textOffset + 1);
++    }
++  } else {
++    const auto marker = source.find("#point(");
++    const auto colon = source.rfind(':');
++    if (marker == std::string::npos || colon == std::string::npos || source.back() != ')' ||
++        !number(source.substr(colon + 1, source.size() - colon - 2), offset))
++      return false;
++    const std::string chapter = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(source.substr(0, marker)));
++    if (chapter.empty() || chapter.front() == '/' || chapter.find("..") != std::string::npos) return false;
++    for (int i = 0; i < epub.getSpineItemsCount(); ++i) {
++      const std::string candidate = epub.getSpineItem(i).href;
++      const auto slash = candidate.rfind('/');
++      if (candidate == chapter || candidate.substr(slash == std::string::npos ? 0 : slash + 1) == chapter) {
++        if (spine != -1) return false;
++        spine = i;
++      }
++    }
++    wanted = source.substr(marker + 7, colon - marker - 7);
++  }
++  if (spine < 0 || wanted.empty()) return false;
++  Scanner scanner(wanted, offset, toCloud);
++  const std::string chapter = epub.getSpineItem(spine).href;
++  if (!epub.readItemContentsToStream(chapter, scanner, 1024) || !scanner.finish()) return false;
++  if (toCloud) {
++    std::string encoded;
++    size_t start = 0;
++    for (;;) {
++      const auto slash = chapter.find('/', start);
++      encoded += pluginhttp::urlEncodeQuery(chapter.substr(start, slash == std::string::npos ? slash : slash - start));
++      if (slash == std::string::npos) break;
++      encoded += '/';
++      start = slash + 1;
++    }
++    destination = encoded + "#point(" + scanner.found + ")";
++  } else {
++    destination = "/body/DocFragment[" + std::to_string(spine + 1) + "]" + scanner.found;
++  }
++  return true;
++}
++}  // namespace tolino
+diff --git a/src/network/TolinoPoint.h b/src/network/TolinoPoint.h
+new file mode 100644
+index 0000000..c324b6b
+--- /dev/null
++++ b/src/network/TolinoPoint.h
+@@ -0,0 +1,7 @@
++#pragma once
++
++#include <string>
++
++namespace tolino {
++bool convertPoint(const std::string& epubPath, const std::string& source, bool toCloud, std::string& destination);
++}

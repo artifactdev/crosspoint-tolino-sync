@@ -9,6 +9,8 @@ const {setTimeout: delay} = require("node:timers/promises");
 
 async function main() {
   const firmware = path.resolve(process.argv[2] || "");
+  const direct = process.argv.includes("--direct");
+  const identity = id => id;
   const binary = process.env.CROSSPOINT_SIM_BINARY || path.join(firmware, ".pio/build/simulator/program");
   assert.ok(fs.existsSync(binary), "Build the patched simulator first.");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tolino-native-bulk-"));
@@ -21,14 +23,48 @@ async function main() {
     description: "Synthetic EPUB fixture", sidecar: JSON.stringify({tolino_id: id})}));
   const payload = Buffer.concat([Buffer.from("PK\x03\x04application/epub+zip"), Buffer.alloc(32768, 0)]);
   const calls = [];
-  let failure = "", paged = false, simulator;
+  let failure = "", paged = false, simulator, refreshes = 0;
   const key = "synthetic-bulk-fixture-key-00000000";
   const server = http.createServer((request, response) => {
-    if (request.headers.authorization !== "Bearer " + key) {
+    const url = new URL(request.url, "http://localhost");
+    if (direct) assert.notEqual(url.pathname, "/api/catalog", "Direct mode must never call a helper catalog");
+    if (direct && url.pathname === "/token") {
+      request.resume();
+      refreshes++;
+      response.writeHead(200, {"Content-Type": "application/json"}).end(JSON.stringify({
+        access_token: "synthetic-access", refresh_token: "synthetic-rotated-" + refreshes, expires_in: 3600,
+      }));
+      return;
+    }
+    if (direct && url.pathname === "/sync-data") {
+      request.resume();
+      assert.equal(request.headers.t_auth_token, "synthetic-access");
+      response.writeHead(200, {"Content-Type": "application/json"}).end('{"revision":"r1","patches":[]}');
+      return;
+    }
+    if (direct && url.pathname.startsWith("/inventory/")) {
+      assert.equal(request.headers.t_auth_token, "synthetic-access");
+      response.writeHead(200, {"Content-Type": "application/json"}).end(JSON.stringify({
+        PublicationInventory: {ebook: [...ids, "drm"].map(id => ({
+          publicationId: "pub-" + id, epubMetaData: {identifier: id, title: id === "drm" ? "Unsupported" : id.toUpperCase(),
+            author: [{name: "Synthetic"}], deliverable: [{
+              contentFormat: "application/epub+zip", contentEncrypted: id === "drm",
+            }]} })), edata: []},
+      }));
+      return;
+    }
+    if (direct && url.pathname.startsWith("/cloud/downloadinfo/")) {
+      const id = Buffer.from(decodeURIComponent(url.pathname.split("/")[3]), "base64").toString();
+      assert.equal(request.headers.t_auth_token, "synthetic-access");
+      response.writeHead(200, {"Content-Type": "application/json"}).end(JSON.stringify({
+        DownloadInfo: {format: "application/epub+zip", contentUrl: "https://tolino-fixture.invalid/api/native-download?id=" + id},
+      }));
+      return;
+    }
+    if ((!direct || url.pathname !== "/api/native-download") && request.headers.authorization !== "Bearer " + key) {
       response.writeHead(401).end();
       return;
     }
-    const url = new URL(request.url, "http://localhost");
     if (url.pathname === "/api/catalog") {
       let rows = url.searchParams.has("supported") ? books : [...books, {id: "drm",
         title: "Unsupported [DRM]", sidecar: '{"tolino_id":"drm"}'}];
@@ -45,6 +81,7 @@ async function main() {
       return;
     }
     const id = url.searchParams.get("id");
+    if (direct) assert.equal(request.headers.t_auth_token, undefined, "Never forward account headers to EPUB CDN");
     calls.push(id);
     if (id === failure || !ids.includes(id)) {
       response.writeHead(500).end();
@@ -64,13 +101,18 @@ async function main() {
   fs.writeFileSync(path.join(plugin, "settings.json"), JSON.stringify({
     mode: "helper", helperUrl: url, helperApiKey: key, nativeTransportAccepted: "true",
   }));
+  if (direct) fs.writeFileSync(path.join(plugin, "direct-session.json"), JSON.stringify({
+    hardwareId: "synthetic-device", refreshToken: "synthetic-refresh", transportAccepted: true,
+  }));
   fs.writeFileSync(path.join(sd, ".crosspoint/settings.json"), '{"pluginsEnabled":1,"pluginHubPromptHidden":1}');
   const old = path.join(folder, "Legacy A.epub");
   fs.writeFileSync(old, payload);
-  fs.writeFileSync(old + ".meta.json", '{"tolino_id":"a","custom":"keep"}');
+  const oldSidecar = JSON.stringify({tolino_id: identity("a"), custom: "keep"});
+  fs.writeFileSync(old + ".meta.json", oldSidecar);
   const before = fs.statSync(old).mtimeMs;
   const env = {...process.env, SDL_VIDEODRIVER: "dummy", CROSSPOINT_SIM_SCREEN_TEXT: "1",
     CROSSPOINT_SIM_WAIT_TIMEOUT_MS: "30000", CROSSPOINT_SIM_HTTP_PORT: "19086"};
+  if (direct) env.TOLINO_SIM_ORIGIN = url;
   const opening = [
     "1500:DOWN", "1800:DOWN", "2100:ENTER", "2400:WAIT:SCREEN:.*Thalia / Tolino",
     "500:ENTER", "800:WAIT:SCREEN:.*Simulator WiFi",
@@ -120,7 +162,7 @@ async function main() {
     assert.deepEqual(calls, ["b", "c", "d", "e"]);
     for (const id of ids.slice(1)) {
       assert.deepEqual(fs.readFileSync(path.join(folder, id.toUpperCase() + ".epub")), payload);
-      assert.equal(JSON.parse(fs.readFileSync(path.join(folder, id.toUpperCase() + ".epub.meta.json"))).tolino_id, id);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(folder, id.toUpperCase() + ".epub.meta.json"))).tolino_id, identity(id));
     }
     const snapshots = fs.readdirSync(folder).map(name => [name, fs.statSync(path.join(folder, name)).mtimeMs]);
     calls.length = 0;
@@ -129,7 +171,11 @@ async function main() {
     assert.doesNotMatch(repeated, /clearBookCache|Done checking metadata cache/);
     assert.deepEqual(fs.readdirSync(folder).map(name => [name, fs.statSync(path.join(folder, name)).mtimeMs]), snapshots);
     assert.equal(fs.statSync(old).mtimeMs, before);
-    assert.equal(fs.readFileSync(old + ".meta.json", "utf8"), '{"tolino_id":"a","custom":"keep"}');
+    assert.equal(fs.readFileSync(old + ".meta.json", "utf8"), oldSidecar);
+    if (direct) {
+      assert.equal(JSON.parse(fs.readFileSync(path.join(plugin, "direct-session.json"))).refreshToken, "synthetic-rotated-2");
+      assert.equal(refreshes, 2, "One token refresh per simulator run, then reuse until expiry");
+    }
 
     removeDownloaded(); paged = true; writeManifest();
     await run("server-pages", "Download complete");

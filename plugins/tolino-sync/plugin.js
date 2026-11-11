@@ -576,7 +576,7 @@
     };
     mode.addEventListener("change", updateMode);
     updateMode();
-    element("p", "Helper mode keeps Thalia tokens on Docker. Use its LAN API URL and key from the dashboard. The API key is plaintext on SD; HTTP LAN traffic is unencrypted. Use a trusted network or HTTPS.", form);
+    element("p", "Keep the Docker bridge running for login renewal, library access and downloads. Use its LAN API URL (normally port 8081) and key from the dashboard, not the dashboard (8080) or login browser (6080) URL. Saved reader progress additionally requires the CrossPoint Sync connector and the reader's separate Sync settings. The API key is plaintext on SD; HTTP LAN traffic is unencrypted. Use a trusted network or HTTPS.", form);
     const save = element("button", "Save connection", form);
     save.type = "submit";
     const clear = element("button", "Clear local session");

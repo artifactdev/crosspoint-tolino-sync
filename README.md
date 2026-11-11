@@ -1,14 +1,39 @@
 # CrossPoint Thalia / Tolino
 
+## Recommended: permanent Docker bridge
+
 A CrossPoint SD plugin with native book catalog, browser setup and **Tolino Bridge** Docker
 companion for Thalia.de. The recommended setup signs in through the container's
 visible browser and automatically transfers the session: no copying Thalia tokens.
 The plugin needs only the helper URL and API key.
+Keep the bridge running for login renewal, library access, downloads and cloud
+requests. Exact reader progress sync additionally uses the
+[CrossPoint Sync connector](tools/crosspoint-sync/README.md); the plugin's
+connection settings do not replace the reader's separate Sync server settings.
+
+The [X4 Pro custom firmware](tools/firmware/README.md) adds native bulk downloads
+through this same bridge; no direct-session file is needed.
+Containerless direct access remains experimental and optional, not the default
+setup. Smartphone-only QR authorization has not been verified.
 
 The Docker browser/library path has retrieved **seven real Thalia books**.
 Companion downloads, cloud-state handling and plugin integration have automated
 contract tests; end-to-end testing on a physical reader is still required.
 Unofficial provider APIs can change.
+
+## Installation from GitHub builds
+
+Follow the [Docker/GHCR deployment guide](tools/pytolino/DEPLOYMENT.md) for a
+new Docker host, persistent secrets/data, browser login, plugin connection
+and exact reading-position sync. It uses prebuilt registry images rather
+than requiring a local source build.
+
+The [X4 Pro firmware workflow](.github/workflows/firmware-x4pro.yml) builds
+the required custom firmware and SD plugin on relevant main pushes,
+version tags and manual runs. Download them from Actions artifacts or the
+generated firmware prerelease; use **only the X4 Pro application image**
+and follow the [firmware installation instructions](tools/firmware/README.md).
+These workflows must be committed and pushed before GitHub can run them.
 
 ## Features and limits
 
@@ -23,11 +48,12 @@ Unofficial provider APIs can change.
 | Reader connection | Helper URL + API key in plugin settings |
 | Native reader plugin | Cloud book list, details, read-only progress and EPUB downloads in helper mode |
 | Unprotected/watermarked EPUBs | Download to SD, preserving metadata sidecars |
-| Cloud reading positions | Dashboard progress column and read-only plugin pull; no cloud writes |
-| CrossPoint saved reading position | **Not synchronized** |
+| Cloud reading positions | Dashboard/plugin reference display; exact cloud writes through opt-in Sync connector |
+| CrossPoint saved reading position | Exact manual **Sync Progress** through CrossPoint Sync; five-minute forward-only cloud import on server |
 | Kobo, Adobe DRM/ACSM, PDF, audiobooks | **Not supported** |
 
-This is not a bidirectional progress synchronizer or a DRM-removal tool.
+The SD plugin alone does not synchronize saved reader positions; use the
+linked Sync connector for bidirectional exact progress. This is not a DRM-removal tool.
 Only download books you are entitled to use. Thalia/Tolino and Kobo are different
 services. Native use requires firmware implementing declarative device catalogs.
 
@@ -42,8 +68,16 @@ The [production Dockerfile](tools/pytolino/Dockerfile.login) builds independentl
    container browser if prompted to complete a security/cookie challenge.
 3. Wait for the dashboard to confirm your actual library. A browser window or
    successful test fixture alone is not proof of account access.
-4. Take the **helper URL and API key** from the dashboard's CrossPoint section.
+4. Take the **helper API URL and API key** from the dashboard's CrossPoint section.
    The reader needs the Docker host's LAN IP, not its own `localhost`.
+   Port **8080** is the dashboard, **6080** its visible login browser, and
+   **8081** the API configured in the plugin. Do not enter the dashboard/browser
+   URL as the helper API URL.
+5. For actual reader progress, configure the separate
+   [CrossPoint Sync connector](tools/crosspoint-sync/README.md) and the reader's
+   Sync settings. Keep both services running. The server imports strictly
+   advancing cloud positions every five minutes; applying them on the reader
+   still requires **Sync Progress**.
 
 In the default local setup, admin/browser remain loopback-only. A separate Bearer-authenticated API
 on port 8081 serves library, covers, supported EPUBs and read-only cloud states.
@@ -229,9 +263,11 @@ limit and merged sidecars the firmware's 2 KB limit.
 
 ## Development and no-device tests
 
-Node.js 20+ is enough for the SD plugin's dependency-free tests and packaging:
+Use Node.js 20+ for local tests and packaging. Install the lockfile dependencies
+first; the distributable SD plugin itself does not bundle Node dependencies:
 
 ```sh
+npm ci
 npm run check
 npm test
 npm run package
@@ -242,6 +278,11 @@ Packaging requires `zip`. The explicit file allowlist creates
 Copy only those files when updating an existing SD installation, preserving settings.
 
 ### Actual firmware simulator test
+
+Start with the [local X4 Pro simulator guide](tools/firmware/SIMULATOR.md):
+it includes prerequisites, pinned firmware checkout, macOS build commands,
+Linux/WSL adjustments, visible startup, persistent SD and bridge setup.
+The simulator compiles host-native firmware, not the downloadable ESP32 image.
 
 The [CrossPoint simulator](https://github.com/crosspoint-reader/crosspoint-simulator)
 can run the real firmware webserver locally. Build a separate

@@ -9,15 +9,26 @@ on:
         default: "42d58daaabcf469a2e5e1ba871714fb9dcf51d29"
   push:
     branches: [main]
+    tags: ["v*"]
     paths:
       - ".github/workflows/firmware-x4pro.yml"
       - "tools/firmware/**"
       - "plugins/tolino-sync/**"
+      - "scripts/local-setup.cjs"
+      - "scripts/package.sh"
+      - "scripts/phone-login-probe.cjs"
+      - "test/**"
+      - "package*.json"
   pull_request:
     paths:
       - ".github/workflows/firmware-x4pro.yml"
       - "tools/firmware/**"
       - "plugins/tolino-sync/**"
+      - "scripts/local-setup.cjs"
+      - "scripts/package.sh"
+      - "scripts/phone-login-probe.cjs"
+      - "test/**"
+      - "package*.json"
 
 permissions:
   contents: read
@@ -34,12 +45,21 @@ jobs:
       - uses: actions/checkout@v6
         with:
           path: bridge
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
       - name: Select original source
         id: source
         env:
           REQUESTED_REF: ${{ inputs.upstream_ref }}
         run: |
           ref="${REQUESTED_REF:-$(cat bridge/tools/firmware/upstream-revision)}"
+          if [[ ! "$ref" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/-]*$ ]]; then
+            echo "::error::Invalid original firmware ref"
+            exit 1
+          fi
           printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v6
         with:
@@ -54,8 +74,19 @@ jobs:
       - name: Test plugin
         working-directory: bridge
         run: |
+          npm ci
           npm run check
           npm test
+      - name: Test exact position conversion
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libexpat1-dev
+          g++ -std=c++17 -DSIMULATOR \
+            -I bridge/tools/firmware/test/stubs \
+            -I firmware/src/network \
+            bridge/tools/firmware/test/point.cpp firmware/src/network/TolinoPoint.cpp \
+            -lexpat -o "$RUNNER_TEMP/tolino-point-test"
+          "$RUNNER_TEMP/tolino-point-test" "$RUNNER_TEMP/tolino-point-fixture.xhtml"
       - name: Build X4 Pro toolchain image
         run: docker build -t tolino-firmware-builder bridge/tools/firmware
       - name: Compile Xteink X4 Pro
@@ -77,18 +108,31 @@ jobs:
           cp dist/tolino-sync-*.zip ../artifacts/
           cp tools/firmware/native-bulk.patch ../artifacts/
           cd ..
+          printf 'Xteink X4 Pro only. Back up SD before updating.\nFirmware setup: https://github.com/%s/blob/%s/tools/firmware/README.md\nDocker deployment: https://github.com/%s/blob/%s/tools/pytolino/DEPLOYMENT.md\nLocal simulator: https://github.com/%s/blob/%s/tools/firmware/SIMULATOR.md\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_SHA" \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" > artifacts/SETUP.txt
           printf 'Original CrossPoint: %s\nSDK: %s\nBridge: %s\nTarget: x4pro-gh_release (ESP32-S3)\n' \
             "$(git -C firmware rev-parse HEAD)" "$(git -C firmware/freeink-sdk rev-parse HEAD)" \
             "$(git -C bridge rev-parse HEAD)" > artifacts/build-info.txt
           cd artifacts
-          sha256sum ./*.bin ./*.zip ./*.patch build-info.txt > SHA256SUMS
+          sha256sum ./*.bin ./*.zip ./*.patch SETUP.txt build-info.txt > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: crosspoint-tolino-x4pro
           path: artifacts/*
           if-no-files-found: error
+  release:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: crosspoint-tolino-x4pro
+          path: artifacts
       - name: Publish downloadable prerelease
-        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -96,6 +140,4 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" artifacts/* --prerelease \
             --title "CrossPoint Tolino - X4 Pro build $GITHUB_RUN_NUMBER" \
-            --notes "Custom firmware based on original CrossPoint. Xteink X4 Pro only, not X3/X4/X4C. Includes native missing-book downloads and identity-based duplicate protection. No DRM removal; self-builds do not include upstream LCP release credentials. Back up the SD card and follow upstream update instructions. See build-info.txt and SHA256SUMS."
-    permissions:
-      contents: write
+            --notes "Custom firmware based on original CrossPoint. Xteink X4 Pro only, not X3/X4/X4C. Recommended setup: permanent Tolino Bridge Docker image from GHCR, helper API URL/key in plugin settings, and separate CrossPoint Sync connector/settings for exact manual reading-position sync. Includes bulk missing-book downloads and identity-based duplicate protection. Direct cloud mode is experimental and not required. Runtime follows upstream TLS trust posture; use trusted networks and read setup warnings. No DRM removal; self-builds do not include upstream LCP release credentials. Back up the SD card and follow upstream update instructions. Setup: https://github.com/$GH_REPO/blob/$GITHUB_SHA/tools/pytolino/DEPLOYMENT.md . See build-info.txt and SHA256SUMS."

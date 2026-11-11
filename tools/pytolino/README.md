@@ -1,5 +1,9 @@
 # pytolino Docker login and token probe
 
+For multi-host registry deployment of the permanent bridge and exact-position
+Sync connector, see the [GHCR deployment guide](DEPLOYMENT.md). The existing
+local source-build Compose setup below remains supported.
+
 ## Login without copying tokens
 
 The browser-enabled image uses a pytolino client with an adapted browser login.

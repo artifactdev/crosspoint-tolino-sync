@@ -4,11 +4,15 @@
   "private": true,
   "description": "Browser-side CrossPoint SD plugin for Thalia/Tolino books",
   "scripts": {
+    "setup": "node scripts/local-setup.cjs",
     "check": "node --check plugins/tolino-sync/plugin.js",
     "test": "node --test test/*.test.cjs",
     "package": "sh scripts/package.sh"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "playwright-core": "1.65.0"
   }
 }

@@ -1,0 +1,163 @@
+name: Publish Tolino Bridge containers
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: "Optional validated image tag (for example v1.2.3-rc.1)"
+        required: false
+        type: string
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - ".github/workflows/docker-publish.yml"
+      - "tools/pytolino/**"
+      - "tools/crosspoint-sync/**"
+  pull_request:
+    paths:
+      - ".github/workflows/docker-publish.yml"
+      - "tools/pytolino/**"
+      - "tools/crosspoint-sync/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: bridge
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Read and validate upstream pin
+        id: pin
+        working-directory: bridge
+        run: |
+          ref="$(tr -d '\r\n' < tools/crosspoint-sync/upstream-revision)"
+          if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "upstream-revision must contain one lowercase 40-character commit SHA" >&2
+            exit 1
+          fi
+          printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: crosspoint-reader/crosspoint-sync
+          ref: ${{ steps.pin.outputs.ref }}
+          path: upstream
+          fetch-depth: 1
+      - name: Apply pinned Tolino connector patch
+        run: |
+          git -C upstream apply --check ../bridge/tools/crosspoint-sync/tolino.patch
+          git -C upstream apply ../bridge/tools/crosspoint-sync/tolino.patch
+      - name: Build and test patched Sync source
+        working-directory: upstream
+        run: |
+          npm ci
+          npm run build
+          npm ci --prefix app
+          npm run build --prefix app
+          npx vitest run test/tolino.test.ts test/connectors.test.ts
+
+  verify-images:
+    needs: verify-sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: bridge
+            package: crosspoint-tolino-bridge
+            context: ./tools/pytolino
+            file: ./tools/pytolino/Dockerfile.login
+          - target: sync
+            package: crosspoint-sync-tolino
+            context: ./tools/crosspoint-sync
+            file: ./tools/crosspoint-sync/Dockerfile
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image without publishing
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: local/${{ matrix.package }}:validation
+          cache-from: type=gha,scope=${{ matrix.target }}
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: [verify-sync, verify-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: bridge
+            package: crosspoint-tolino-bridge
+            context: ./tools/pytolino
+            file: ./tools/pytolino/Dockerfile.login
+          - target: sync
+            package: crosspoint-sync-tolino
+            context: ./tools/crosspoint-sync
+            file: ./tools/crosspoint-sync/Dockerfile
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate optional manual version tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REQUESTED_TAG: ${{ inputs.version_tag }}
+        run: |
+          if [ -n "$REQUESTED_TAG" ] && ! [[ "$REQUESTED_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+            echo "Use a version tag such as v1.2.3 or v1.2.3-rc.1" >&2
+            exit 1
+          fi
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR with the workflow token
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate image tags and labels
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/artifactdev/${{ matrix.package }}
+          tags: |
+            type=raw,value=main,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
+            type=sha,prefix=sha-,format=short
+            type=raw,value=manual-${{ github.run_number }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ inputs.version_tag || 'unused-manual-tag' }},enable=${{ github.event_name == 'workflow_dispatch' && inputs.version_tag != '' }}
+      - name: Build and publish multi-platform image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,scope=${{ matrix.target }},mode=max
+          provenance: true
+          sbom: true

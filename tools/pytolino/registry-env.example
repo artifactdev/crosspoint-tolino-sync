@@ -1,0 +1,25 @@
+BRIDGE_IMAGE=ghcr.io/artifactdev/crosspoint-tolino-bridge:main
+SYNC_IMAGE=ghcr.io/artifactdev/crosspoint-sync-tolino:main
+
+# Keep this directory and the deploy.env file outside the source checkout.
+BRIDGE_SECRETS_DIR=/opt/crosspoint-tolino/secrets
+
+# Exact origins visible to each client. These loopback values match the safe
+# default binds below; change them only when exposing the service via LAN/proxy.
+HELPER_ADMIN_ORIGIN=http://127.0.0.1:8080
+HELPER_BROWSER_ORIGIN=http://127.0.0.1:6080
+HELPER_PUBLIC_URL=http://127.0.0.1:8081
+
+# Safest defaults are loopback-only. For reader/LAN access, replace only the
+# required bind address with the Docker host's specific trusted LAN IP.
+BRIDGE_ADMIN_BIND_ADDRESS=127.0.0.1
+BRIDGE_BROWSER_BIND_ADDRESS=127.0.0.1
+HELPER_BIND_ADDRESS=127.0.0.1
+SYNC_BIND_ADDRESS=127.0.0.1
+
+# Keep cloud progress writes off until explicitly configured in both services.
+HELPER_SYNC_WRITES=0
+SYNC_ALLOW_HTTP_LOCALHOST=1
+SYNC_TRUST_PROXY=0
+SYNC_REGISTRATION_DISABLED=0
+SYNC_BASE_PATH=

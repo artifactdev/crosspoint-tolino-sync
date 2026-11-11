@@ -93,11 +93,14 @@ def main():
     key = Path(os.environ["SYNC_STORAGE_KEY_FILE"]).read_text().strip()
     if not re.fullmatch(r"[0-9a-fA-F]{64}", key):
         raise ValueError("Sync storage key must be 64 hexadecimal characters.")
-    for folder in ("/data/bridge", "/data/sync"):
-        Path(folder).mkdir(mode=0o700, parents=True, exist_ok=True)
-    bridge_env = dict(os.environ, HELPER_DATA_DIR="/data/bridge")
+    data = Path(os.environ.get("ALLINONE_DATA_DIR", "/data"))
+    if not data.is_absolute():
+        raise ValueError("ALLINONE_DATA_DIR must be an absolute container path.")
+    for folder in (data / "bridge", data / "sync"):
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    bridge_env = dict(os.environ, HELPER_DATA_DIR=str(data / "bridge"))
     sync_env = dict(
-        os.environ, TOKEN_ENC_KEY=key, DATABASE_PATH="/data/sync/crosspoint.db",
+        os.environ, TOKEN_ENC_KEY=key, DATABASE_PATH=str(data / "sync" / "crosspoint.db"),
         PORT="8082", WEB_APP_DIR="/app/sync/web", LISTEN_ADDRESS="::",
         TOLINO_HELPER_URL="http://127.0.0.1:8081",
         ALLOW_HTTP_LOCALHOST=os.environ.get("SYNC_ALLOW_HTTP_LOCALHOST", "1"),

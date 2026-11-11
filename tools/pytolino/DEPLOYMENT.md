@@ -9,6 +9,12 @@ starts both services, checks readiness, stops the whole container on a child
 failure or repeated unhealthy checks, and shuts down their process groups
 on container stop. Docker's restart policy restarts the complete application.
 
+**Unraid Docker tab:** use the dedicated
+[Unraid setup guide](UNRAID.md) for exact Add Container fields, appdata/secrets
+path mappings, all four TCP ports, environment variables and Extra Parameters.
+That guide offers a single appdata-root mount using `ALLINONE_DATA_DIR`;
+the Compose layout below retains separate read-only secret mounts.
+
 ## Image, platforms, and updates
 
 The GitHub Actions workflow publishes:
@@ -255,9 +261,11 @@ From the repository root:
 docker build -f tools/pytolino/Dockerfile.allinone -t crosspoint-tolino-bridge:dev .
 python3 -m unittest discover -s tools/pytolino -p test_allinone.py -v
 python3 tools/pytolino/allinone_smoke.py crosspoint-tolino-bridge:dev
+python3 tools/pytolino/allinone_smoke.py crosspoint-tolino-bridge:dev --single-path
 ```
 
-The runtime smoke uses isolated temporary secrets and a temporary Docker volume.
+The runtime smoke uses isolated temporary secrets and a temporary Docker volume;
+`--single-path` instead tests the Unraid-style single appdata bind mount.
 It never logs into Thalia, touches an existing deployment or uses real books.
 The simulator remains a separate native development program; see the
 [simulator guide](../firmware/SIMULATOR.md).

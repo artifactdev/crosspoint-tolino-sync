@@ -1,0 +1,12 @@
+**
+!tools/
+!tools/pytolino/
+!tools/pytolino/*.py
+!tools/pytolino/requirements.txt
+!tools/pytolino/dashboard.html
+!tools/pytolino/dashboard.css
+!tools/pytolino/dashboard.js
+!tools/pytolino/display.js
+!tools/crosspoint-sync/
+!tools/crosspoint-sync/upstream-revision
+!tools/crosspoint-sync/tolino.patch

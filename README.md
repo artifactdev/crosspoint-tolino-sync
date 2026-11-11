@@ -25,7 +25,9 @@ Unofficial provider APIs can change.
 
 Follow the [Docker/GHCR deployment guide](tools/pytolino/DEPLOYMENT.md) for a
 new Docker host, persistent secrets/data, browser login, plugin connection
-and exact reading-position sync. It uses prebuilt registry images rather
+and exact reading-position sync. One all-in-one GHCR image contains the
+bridge, browser login and Sync server, with one data volume and external secrets.
+It uses a prebuilt registry image rather
 than requiring a local source build.
 
 The [X4 Pro firmware workflow](.github/workflows/firmware-x4pro.yml) builds

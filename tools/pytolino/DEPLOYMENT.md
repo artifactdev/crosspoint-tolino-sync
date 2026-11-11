@@ -1,42 +1,47 @@
 # Permanent Tolino Bridge deployment (GHCR)
 
 This deployment runs the browser/login/library bridge and the exact-position
-CrossPoint Sync connector as **separate containers and images**. It works on a
+CrossPoint Sync connector in **one container and one image**. It works on a
 Docker Engine/Compose host without building firmware or running the old local
 source-build setup. The helper uses Chromium/noVNC; Sync is built from the
-pinned upstream source plus this repository's checked patch.
+pinned upstream source plus this repository's checked patch. A small supervisor
+starts both services, checks readiness, stops the whole container on a child
+failure or repeated unhealthy checks, and shuts down their process groups
+on container stop. Docker's restart policy restarts the complete application.
 
-## Images, platforms, and updates
+## Image, platforms, and updates
 
 The GitHub Actions workflow publishes:
 
 | Image | Purpose | Registry |
 |---|---|---|
-| `crosspoint-tolino-bridge` | Thalia login, library, keyed API and browser | `ghcr.io/artifactdev/crosspoint-tolino-bridge` |
-| `crosspoint-sync-tolino` | CrossPoint Sync server with exact Tolino connector | `ghcr.io/artifactdev/crosspoint-sync-tolino` |
+| `crosspoint-tolino-bridge` | Thalia login, library, keyed API, browser and exact-position Sync server | `ghcr.io/artifactdev/crosspoint-tolino-bridge` |
 
-Actions builds both images for `linux/amd64` and `linux/arm64`, and requires
-no-push builds on both platforms before publication. Local validation built
-and ran the bridge's ARM64 Debian Python/Chromium packages and built/started
-the ARM64 Sync image. The Sync image uses Node Alpine and an architecture-
-independent Node application. No images have been published by this change;
-the first Actions run will also validate the amd64 builds. These are CPU
+Actions builds the combined image for `linux/amd64` and `linux/arm64`, and
+requires no-push builds on both platforms before publication. The runtime
+uses Debian with Python, Chromium and Node 24, all running as UID/GID 65534.
+The combined ARM64 image has been built and runtime-tested locally, including
+authenticated health checks, the Sync web app, graceful stop, restart and
+persistent data. Actions repeats the runtime test on AMD64 before publication.
+These are CPU
 architecture checks, not validation of every Docker host, kernel, browser
 login provider, or reader model.
 
 On pushes to `main`, Actions publishes `:main`, `:latest`, and a commit-derived
-`:sha-<short-commit>` tag for each image. A pushed `v*` Git tag publishes that
+`:sha-<short-commit>` tag. A pushed `v*` Git tag publishes that
 version tag (for example `:v1.2.3`) and its commit tag. Manual runs publish
 `:manual-<run-number>` and an optional validated version tag; they do not
-replace `:latest`. Pull requests build both multi-architecture images and test
-the patched Sync source without logging in to GHCR or pushing images.
+replace `:latest`. Pull requests build the multi-architecture image and test
+the patched Sync source, process supervision and the combined service lifecycle
+without logging in to GHCR or pushing images.
 
-For production, pin both `*_IMAGE` values in the environment file to the same
+For production, pin `BRIDGE_IMAGE` in the environment file to a
 version or commit tag. `main`/`latest` are convenient moving tags, not update
-pins. After publishing, update the image tags and run `docker compose pull`
+pins. After publishing, update the image tag and run `docker compose pull`
 then `docker compose up -d`. The old source-build files
 (`tools/pytolino/compose.yaml`, `tools/crosspoint-sync/compose.yaml`) are
-unchanged and remain available for local development.
+unchanged and remain available as the legacy separate-service development setup.
+`SYNC_IMAGE` is no longer used by the registry deployment.
 
 ## Prepare a host and private image access
 
@@ -93,7 +98,7 @@ docker run --rm --user 65534:65534 \
 docker run --rm --user 65534:65534 \
   -v /opt/crosspoint-tolino/secrets:/secrets \
   --entrypoint python ghcr.io/artifactdev/crosspoint-tolino-bridge:main \
-  -c 'import os,secrets; p="/secrets/sync-storage-key"; f=open(p,"x"); f.write(secrets.token_hex(32)+"\n"); f.close(); os.chmod(p,0o644)'
+  -c 'import os,secrets; fd=os.open("/secrets/sync-storage-key",os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600); f=os.fdopen(fd,"w"); f.write(secrets.token_hex(32)+"\n"); f.close()'
 ```
 
 The initializer creates the four bridge files once, never overwrites existing
@@ -118,14 +123,16 @@ Keep the env file private (`chmod 600`) and use its absolute path for Compose.
 
 ## Network, ports, and first start
 
-The services publish these **host ports**; their container ports stay fixed:
+The single container publishes these **host ports**; internal ports stay fixed.
+The plugin API and reader Sync URLs remain separate; combining processes does
+not merge their protocols or configuration.
 
 | Host port | Container | Purpose | Default host bind |
 |---:|---:|---|---|
 | 8080 | helper:8080 | Admin/login dashboard (Basic auth) | `127.0.0.1` |
 | 6080 | helper:6080 | Authenticated noVNC browser | `127.0.0.1` |
 | 8081 | helper:8081 | API used by CrossPoint and Sync (API key on every route) | `127.0.0.1` |
-| 8082 | sync:8080 | Sync website and reader protocol | `127.0.0.1` |
+| 8082 | helper:8082 | Sync website and reader protocol | `127.0.0.1` |
 
 Loopback defaults are intentional. Set each needed `*_BIND_ADDRESS` to the
 Docker host's **specific trusted LAN address** for direct LAN clients; do not
@@ -174,7 +181,7 @@ Open Sync at `http://HOST:8082/app/` from a trusted local browser, create the
 Sync account, then add **Tolino / Thalia (local helper)** in Settings using the
 helper API key. The helper must already be signed in. After the initial
 account is created, set `SYNC_REGISTRATION_DISABLED=1` in the private env file
-and recreate the containers. Keep account credentials separate from Thalia
+and recreate the container. Keep account credentials separate from Thalia
 credentials.
 
 ### Book registration and progress behavior
@@ -200,16 +207,16 @@ synthetic books for write testing rather than altering a real reading history.
 
 ## Persistence, updates, and recovery
 
-Compose creates persistent named volumes with the Compose project prefix
-(`*_bridge_data` and `*_sync_data`); do not use `docker compose down -v`.
-The bridge volume holds encrypted login
-state. The Sync volume holds its SQLite database, Sync accounts, and linked
-connector records. The helper storage key and Sync `TOKEN_ENC_KEY` must remain
+Compose creates one persistent named volume with the Compose project prefix
+(`*_allinone_data`); do not use `docker compose down -v`.
+`/data/bridge` holds encrypted login state and `/data/sync` holds the SQLite
+database, Sync accounts and linked connector records. All processes run as
+UID/GID 65534. The helper storage key and Sync `TOKEN_ENC_KEY` must remain
 stable and be backed up with access restricted. Losing a key may require
 sign-in again or make saved connector credentials unreadable.
 
-Back up both volumes and all five secret files before upgrades. For consistent
-SQLite backups, stop the services before copying volume contents; restore the
+Back up the volume and all five secret files before upgrades. For consistent
+SQLite backups, stop the container before copying volume contents; restore the
 same volume data and keys together. To update, pull the selected image tags
 and recreate with `up -d`; the named volumes and external secrets stay in
 place. Inspect logs/status after upgrades and keep a known-good version tag
@@ -218,3 +225,39 @@ available for rollback. Never remove the data volumes as an update step.
 For local source builds and Unraid-specific instructions, see
 [`README.md`](README.md) and [`UNRAID.md`](UNRAID.md). For Sync connector
 details and safeguards, see [`../crosspoint-sync/README.md`](../crosspoint-sync/README.md).
+
+## Migrating an existing two-container installation
+
+This is not an in-place volume-layout change. Stop both old services first,
+back up their volumes and retain all five original secrets. Do not initialize
+new encryption keys. Create a fresh all-in-one volume: copy the **contents**
+of the old bridge data volume into its `bridge/` subdirectory, and the contents
+of the old Sync data volume into `sync/`. Preserve the SQLite database together
+with any journal/WAL files from the stopped service. Set ownership of the copied
+data to UID/GID 65534 (the old Sync image used UID 1000).
+
+Use the new registry Compose file and existing secrets, then start the combined
+container. Keep the externally configured API/Sync URLs unchanged where possible.
+Existing connector records can still contain the former internal helper origin
+`http://helper:8081`; reconnect/update that connector in Sync Settings so new
+records use `http://127.0.0.1:8081`. The Compose service retains the name `helper`
+for compatibility with old internal addresses, but there is no second service.
+Verify the real library, Sync login and registered matches before enabling
+writes. Do not run old and new deployments concurrently against the same
+database or rotating provider session. Keep the old backups for rollback;
+do not delete either old volume during migration.
+
+## Local combined-image development
+
+From the repository root:
+
+```sh
+docker build -f tools/pytolino/Dockerfile.allinone -t crosspoint-tolino-bridge:dev .
+python3 -m unittest discover -s tools/pytolino -p test_allinone.py -v
+python3 tools/pytolino/allinone_smoke.py crosspoint-tolino-bridge:dev
+```
+
+The runtime smoke uses isolated temporary secrets and a temporary Docker volume.
+It never logs into Thalia, touches an existing deployment or uses real books.
+The simulator remains a separate native development program; see the
+[simulator guide](../firmware/SIMULATOR.md).

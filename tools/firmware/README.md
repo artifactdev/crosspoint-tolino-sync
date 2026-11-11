@@ -111,7 +111,7 @@ Version tags matching `v*` also trigger the build. Pull requests only build/test
 and upload Actions artifacts; only the separate release job receives write
 permission. The workflow also runs the exact-position host C++ tests.
 The [registry deployment guide](../pytolino/DEPLOYMENT.md) explains how to
-install the matching Docker services on a different host.
+install the all-in-one Docker bridge and Sync server on a different host.
 
 The default original revision is pinned in [upstream-revision](./upstream-revision).
 For a newer official release, supply its tag/commit in the manual workflow.

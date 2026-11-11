@@ -1,5 +1,4 @@
 BRIDGE_IMAGE=ghcr.io/artifactdev/crosspoint-tolino-bridge:main
-SYNC_IMAGE=ghcr.io/artifactdev/crosspoint-sync-tolino:main
 
 # Keep this directory and the deploy.env file outside the source checkout.
 BRIDGE_SECRETS_DIR=/opt/crosspoint-tolino/secrets

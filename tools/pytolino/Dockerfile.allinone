@@ -1,0 +1,55 @@
+FROM node:24-bookworm-slim AS sync-source
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /source
+COPY tools/crosspoint-sync/upstream-revision tools/crosspoint-sync/tolino.patch ./
+RUN REF="$(cat upstream-revision)" \
+    && echo "$REF" | grep -Eq '^[0-9a-f]{40}$' \
+    && git init \
+    && git remote add origin https://github.com/crosspoint-reader/crosspoint-sync.git \
+    && git fetch --depth 1 origin "$REF" \
+    && git checkout --detach FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = "$REF" \
+    && git apply --check tolino.patch && git apply tolino.patch
+
+FROM sync-source AS sync-build
+RUN npm ci && npm run build && npm prune --omit=dev
+
+FROM sync-source AS sync-web
+RUN npm ci --prefix app && npm run build --prefix app
+
+FROM node:24-bookworm-slim AS node-runtime
+FROM python:3.12-slim-trixie
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium chromium-driver xvfb xauth x11vnc novnc websockify libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+WORKDIR /app
+COPY tools/pytolino/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && chown -R 65534:65534 /usr/local/lib/python3.12/site-packages/seleniumbase/drivers \
+    && mkdir -p /data/bridge /data/sync && chown -R 65534:65534 /data && chmod 700 /data
+COPY tools/pytolino/probe.py tools/pytolino/login_server.py tools/pytolino/thalia_client.py \
+    tools/pytolino/companion.py tools/pytolino/dashboard.html tools/pytolino/dashboard.css \
+    tools/pytolino/dashboard.js tools/pytolino/display.js tools/pytolino/session_store.py \
+    tools/pytolino/setup_storage.py tools/pytolino/allinone.py /app/
+COPY --from=sync-build /source/node_modules /app/sync/node_modules
+COPY --from=sync-build /source/dist /app/sync/dist
+COPY --from=sync-web /source/app/dist /app/sync/web
+COPY --from=sync-source /source/migrations /app/sync/migrations
+COPY --from=sync-source /source/assets /app/sync/assets
+COPY --from=sync-source /source/extension /app/sync/extension
+COPY --from=sync-source /source/package.json /app/sync/package.json
+ENV DISPLAY=:99 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/tmp/pytolino \
+    XDG_CONFIG_HOME=/tmp/pytolino/config \
+    XDG_DATA_HOME=/tmp/pytolino/data \
+    XDG_CACHE_HOME=/tmp/pytolino/cache \
+    NODE_ENV=production
+USER 65534:65534
+EXPOSE 8080 8081 8082 6080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s \
+    CMD ["python", "/app/allinone.py", "--healthcheck"]
+ENTRYPOINT ["python", "/app/allinone.py"]

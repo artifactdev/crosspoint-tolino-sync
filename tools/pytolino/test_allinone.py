@@ -7,6 +7,7 @@ import threading
 import unittest
 
 from allinone import supervise
+from allinone_smoke import REMOVE_TEST_DATA
 
 
 class SupervisionTests(unittest.TestCase):
@@ -62,6 +63,30 @@ class SupervisionTests(unittest.TestCase):
             pid = int(pidfile.read_text())
             result = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
             self.assertTrue(result.returncode != 0 or result.stdout.strip().startswith("Z"))
+
+
+class SmokeCleanupTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0,
+                         "Requires Linux root to reproduce runner/container UID separation")
+    def test_private_container_directories_cleaned_without_runner_access(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.chmod(root, 0o777)
+            data = Path(root) / "data"
+            private = data / "sync"
+            private.mkdir(parents=True, mode=0o700)
+            (private / "fixture.db").write_text("fixture")
+            for entry in (private / "fixture.db", private, data):
+                os.chown(entry, 65534, 65534)
+            probe = subprocess.run(
+                [sys.executable, "-c", "import os,sys;os.listdir(sys.argv[1])", str(private)],
+                user=1000, group=1000, capture_output=True,
+            )
+            self.assertNotEqual(probe.returncode, 0)
+            cleanup = REMOVE_TEST_DATA.replace("'/cleanup/data'", repr(str(data)))
+            subprocess.run([sys.executable, "-c", cleanup], user=65534, group=65534, check=True)
+            self.assertFalse(data.exists())
+            # Cleanup is also valid when startup never created the data folder.
+            subprocess.run([sys.executable, "-c", cleanup], user=65534, group=65534, check=True)
 
 
 if __name__ == "__main__":

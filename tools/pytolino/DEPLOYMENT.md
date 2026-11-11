@@ -266,6 +266,9 @@ python3 tools/pytolino/allinone_smoke.py crosspoint-tolino-bridge:dev --single-p
 
 The runtime smoke uses isolated temporary secrets and a temporary Docker volume;
 `--single-path` instead tests the Unraid-style single appdata bind mount.
+On Linux, this smoke removes only its disposable `data/` subtree using the
+container's owning UID before the runner deletes its temporary directory;
+production data permissions are not relaxed.
 It never logs into Thalia, touches an existing deployment or uses real books.
 The simulator remains a separate native development program; see the
 [simulator guide](../firmware/SIMULATOR.md).

@@ -102,6 +102,10 @@ jobs:
           cache-from: type=gha,scope=allinone
       - name: Test combined service lifecycle and persistence
         run: |
+          docker run --rm --user 0:0 --entrypoint python \
+            -v "$PWD/tools/pytolino:/tests:ro" -w /tests \
+            local/crosspoint-tolino-bridge:validation \
+            -m unittest test_allinone.SmokeCleanupTests -v
           python tools/pytolino/allinone_smoke.py local/crosspoint-tolino-bridge:validation
           python tools/pytolino/allinone_smoke.py local/crosspoint-tolino-bridge:validation --single-path
 

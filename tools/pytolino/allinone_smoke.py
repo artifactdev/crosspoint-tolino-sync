@@ -10,6 +10,13 @@ import time
 import uuid
 
 
+REMOVE_TEST_DATA = (
+    "from pathlib import Path;import shutil;"
+    "data=Path('/cleanup/data');"
+    "shutil.rmtree(data) if data.exists() else None"
+)
+
+
 def docker(*args, capture=False, check=True):
     return subprocess.run(["docker", *args], check=check, text=True,
                           stdout=subprocess.PIPE if capture else None)
@@ -106,7 +113,14 @@ def main(image, single_path=False):
         finally:
             if created:
                 docker("rm", "-f", name, capture=True)
-            if not single_path:
+            if single_path:
+                # Remove private UID-65534 directories as their owner before
+                # the Linux runner cleans up its own TemporaryDirectory.
+                docker("run", "--rm", "--pull=never", "--network=none",
+                       "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
+                       "-v", root + ":/cleanup", "--entrypoint", "python",
+                       image, "-c", REMOVE_TEST_DATA)
+            else:
                 docker("volume", "rm", volume, capture=True, check=False)
 
 

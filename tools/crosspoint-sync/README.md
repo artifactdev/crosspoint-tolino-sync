@@ -76,7 +76,36 @@ For a standalone patched Sync server, `WEB_AUTH_USER` and `WEB_AUTH_ORIGIN`
 enable only the hosted `/app/` passwordless mode; device authentication remains
 required. Legacy token/account login pages retain their normal authentication.
 
-## Register downloaded books before the first sync
+## Automatic cloud-library registration
+
+Linking the Tolino connector automatically registers every supported EPUB in
+the bridge's library for that Sync user. Existing links are also discovered at
+server startup and during the five-minute cloud refresh. New purchases appear
+on the next refresh; **Settings > Tolino > Refresh and register library** runs
+discovery immediately.
+
+The server downloads each previously unknown supported EPUB to verify its
+binary document hash, stores that identity persistently and seeds the exact
+Tolino book match. Subsequent discovery reuses verified identities across
+restarts. Normal position mapping may download EPUB text again after its
+bounded short-lived cache expires. Initial discovery can take time and use
+bandwidth for large libraries. It never uploads the reader's book-start page
+or writes reading positions to Tolino.
+
+Existing cloud positions are imported. Registered books without a cloud
+position appear under **Available from Tolino**, without a made-up percentage
+or reading history. DRM/unsupported books cannot get a usable EPUB identity;
+their titles and skip reasons appear in the connector settings alongside
+registration errors and counts. Failed supported downloads retry on the next
+refresh. One failing book does not prevent other supported books from being
+registered. Removing a book from the bridge or unlinking the connector does
+not delete previously imported reading data.
+
+This requires the updated server image/patch. The reader still needs
+**CrossPoint**, **Binary** matching and **Send Document Metadata**; use **Sync
+Progress > Apply remote progress** to move its local position.
+
+### Optional manual registration for older deployments
 
 This prevents a first upload from replacing an existing cloud position with the
 reader's book-start position. It sends **metadata only**, never reading progress.
@@ -105,7 +134,7 @@ Configure the reader's sync settings:
 - Credentials: the CrossPoint Sync account, **not** the Thalia account.
 
 Then open the downloaded book and use **Sync Progress** to apply the cloud
-position. Register newly downloaded books before their first sync as well.
+position. Updated deployments register new cloud books automatically.
 
 ## Explicitly enabling reader-to-cloud writes
 

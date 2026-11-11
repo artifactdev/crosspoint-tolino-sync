@@ -5,10 +5,13 @@ const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
+const {createHash} = require("node:crypto");
 
 async function main() {
   const binary = process.env.CROSSPOINT_SIM_BINARY;
-  const pull = process.argv.includes("--pull"), unconfirmed = process.argv.includes("--unconfirmed");
+  const bridge = process.argv.includes("--bridge");
+  const filename = process.argv.includes("--filename"), registrationFailed = process.argv.includes("--registration-failed");
+  const pull = bridge || process.argv.includes("--pull"), unconfirmed = process.argv.includes("--unconfirmed");
   const mismatch = process.argv.includes("--mismatch");
   assert.ok(binary && fs.existsSync(binary), "Set CROSSPOINT_SIM_BINARY to the built native simulator.");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tolino-direct-sync-"));
@@ -31,16 +34,49 @@ with zipfile.ZipFile(sys.argv[1],"w") as z:
   fs.writeFileSync(path.join(config, "state.json"), JSON.stringify({
     openEpubPath: "/Fixture.epub", lastSleepFromReader: true, showBootScreen: false,
   }));
-  fs.writeFileSync(path.join(config, "plugins/tolino-sync/direct-session.json"), JSON.stringify({
+  if (!bridge) fs.writeFileSync(path.join(config, "plugins/tolino-sync/direct-session.json"), JSON.stringify({
     hardwareId: "synthetic-device", refreshToken: "synthetic-refresh", transportAccepted: true,
   }));
   let bookmark = pull ? {position: "OPS/chapter.xhtml#point(/1/2/80/1:0)",
     progress: 0.8, modified: Date.now() - 5000, revision: "existing-slot-revision"} : null;
-  let writes = 0, syncReads = 0, refreshes = 0;
+  const hash = createHash("md5"), bytes = fs.readFileSync(book);
+  for (let i = -1; i < 11; i++) {
+    const offset = i < 0 ? 0 : 1024 * 4 ** i;
+    if (offset < bytes.length) hash.update(bytes.subarray(offset, Math.min(offset + 1024, bytes.length)));
+  }
+  const document = hash.digest("hex");
+  let writes = 0, syncReads = 0, refreshes = 0, registrations = 0;
   const server = http.createServer(async (request, response) => {
     let raw = "";
     for await (const chunk of request) raw += chunk;
     response.setHeader("Content-Type", "application/json");
+    if (bridge) {
+      assert.equal(request.headers["x-auth-user"], "fixture-reader");
+      assert.equal(request.headers["x-auth-key"], createHash("md5").update("synthetic-password").digest("hex"));
+      if (request.url === "/api/v1/documents") {
+        assert.equal(request.method, "PUT");
+        const body = JSON.parse(raw);
+        assert.equal(body.items.length, 1);
+        assert.equal(body.items[0].document, document);
+        assert.equal(body.items[0].tolino_id, "synthetic");
+        assert.equal(body.items[0].title, "Fixture");
+        assert.equal(body.items[0].filename, "Fixture.epub");
+        assert.equal(body.items[0].progress, undefined);
+        assert.equal(body.items[0].percentage, undefined);
+        registrations++;
+        response.statusCode = registrationFailed ? 500 : 200;
+        response.end(JSON.stringify({accepted: 1}));
+        return;
+      }
+      assert.ok(request.url.startsWith("/syncs/progress/" + document));
+      assert.equal(request.method, "GET", "A first cloud pull must never upload local progress.");
+      assert.equal(registrations, 1, "Register book identity before fetching its cloud position.");
+      syncReads++;
+      response.end(JSON.stringify({document, percentage: 0.8,
+        progress: "/body/DocFragment[1]/body/p[80]/text()[1].0", device: "Tolino",
+        device_id: "tolino", timestamp: Math.floor(Date.now() / 1000)}));
+      return;
+    }
     if (request.url === "/fixture.epub") {
       assert.equal(request.headers.t_auth_token, undefined);
       response.setHeader("Content-Type", "application/epub+zip");
@@ -85,13 +121,21 @@ with zipfile.ZipFile(sys.argv[1],"w") as z:
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = "http://127.0.0.1:" + server.address().port;
+  if (bridge) fs.writeFileSync(path.join(config, "koreader.json"), JSON.stringify({
+    cfgVersion: 3, username: "fixture-reader", password: "synthetic-password",
+    serverUrl: origin, serverType: 0, matchMethod: filename ? 0 : 1,
+    syncBehavior: 0, sendMetadata: true,
+  }));
   let child;
   try {
     const steps = [
       "1500:RIGHT", "2000:RIGHT", "2500:HOME:1200",
       "4000:WAIT:SCREEN:.*Simulator WiFi", "300:ENTER",
     ];
-    if (pull) steps.push("3000:QUIT");
+    if (bridge) {
+      if (filename || registrationFailed) steps.push("600:WAIT:SCREEN:.*Sync failed", "300:QUIT");
+      else steps.push("600:WAIT:SCREEN:.*Apply remote progress", "300:ENTER", "2500:QUIT");
+    } else if (pull) steps.push("3000:QUIT");
     else steps.push("600:WAIT:SCREEN:.*Upload", "300:ENTER",
       "600:WAIT:SCREEN:.*" + (unconfirmed || mismatch ? "Sync failed" : "Progress uploaded"), "300:QUIT");
     let output = "";
@@ -103,12 +147,17 @@ with zipfile.ZipFile(sys.argv[1],"w") as z:
     const code = await new Promise((resolve, reject) => {child.once("exit", resolve); child.once("error", reject);});
     clearTimeout(timer);
     assert.equal(code, 0, output.slice(-6000));
-    assert.doesNotMatch(output, unconfirmed || mismatch ? /WAIT timed out|Progress uploaded/ : /WAIT timed out|Sync failed|Mapping failed/, output.slice(-6000));
+    assert.doesNotMatch(output, unconfirmed || mismatch || filename || registrationFailed ? /WAIT timed out|Progress uploaded/ : /WAIT timed out|Sync failed|Mapping failed/, output.slice(-6000));
     assert.equal(writes, pull || mismatch ? 0 : 1, output.slice(-6000));
-    if (pull) assert.match(output, /Progress saved: spine=0 offset=38147 page=61/);
-    assert.equal(refreshes, 1);
-    assert.ok(syncReads >= (pull || mismatch ? 1 : 3), "Pull/fresh revision checks/readback verification must happen.");
-    console.log(pull ? "PASS: actual native reader pulls and applies the exact cloud position without helper or Sync server."
+    if (pull && !filename && !registrationFailed) assert.match(output, /Progress saved: spine=0 offset=38147 page=61/);
+    assert.equal(refreshes, bridge ? 0 : 1);
+    if (bridge) {
+      assert.equal(registrations, filename ? 0 : 1);
+      assert.equal(syncReads, filename || registrationFailed ? 0 : 1);
+      if (filename) assert.match(output, /Tolino requires CrossPoint server, Binary matching and Send metadata/);
+    } else assert.ok(syncReads >= (pull || mismatch ? 1 : 3), "Pull/fresh revision checks/readback verification must happen.");
+    console.log(bridge ? "PASS: native bridge sync registers binary book identity before first pull, never uploads book-start progress, and enforces configuration/registration failures."
+      : pull ? "PASS: actual native reader pulls and applies the exact cloud position without helper or Sync server."
       : unconfirmed ? "PASS: native reader refuses success when Tolino readback does not confirm the write."
         : mismatch ? "PASS: native reader refuses cloud writes for a binary-mismatched EPUB edition."
         : "PASS: actual native reader uploads exact progress directly to cloud with no helper or Sync server; first bookmark creation and readback verified.");

@@ -49,6 +49,19 @@ then `docker compose up -d`. The old source-build files
 unchanged and remain available as the legacy separate-service development setup.
 `SYNC_IMAGE` is no longer used by the registry deployment.
 
+## Automatic Sync library discovery
+
+After linking Tolino in Sync Settings, all supported bridge EPUBs are registered
+automatically, including before any reader opens them. Discovery also runs at
+server startup and on the five-minute refresh. Each unknown EPUB is downloaded
+to calculate its binary identity; identities are retained in the Sync database.
+No Tolino reading positions are written during discovery. Existing cloud
+positions are imported, while unread books appear under **Available from
+Tolino** without fabricated progress. Sync Settings shows registration
+counts, DRM/unsupported skips and failures, and offers **Refresh and register
+library**. See [the connector guide](../crosspoint-sync/README.md#automatic-cloud-library-registration)
+for details. Update the image to enable this; keep your data and keys.
+
 ## Optional passwordless web access
 
 Authentication is enabled by default. For an isolated trusted LAN only, set
@@ -284,6 +297,9 @@ docker build -f tools/pytolino/Dockerfile.allinone -t crosspoint-tolino-bridge:d
 python3 -m unittest discover -s tools/pytolino -p test_allinone.py -v
 python3 tools/pytolino/allinone_smoke.py crosspoint-tolino-bridge:dev
 python3 tools/pytolino/allinone_smoke.py crosspoint-tolino-bridge:dev --single-path
+docker run --rm --network none --entrypoint node \
+  -v "$PWD/tools/crosspoint-sync:/tests:ro" \
+  crosspoint-tolino-bridge:dev /tests/library-smoke.mjs
 ```
 
 The runtime smoke uses isolated temporary secrets and a temporary Docker volume;
@@ -292,5 +308,8 @@ On Linux, this smoke removes only its disposable `data/` subtree using the
 container's owning UID before the runner deletes its temporary directory;
 production data permissions are not relaxed.
 It never logs into Thalia, touches an existing deployment or uses real books.
+The isolated library smoke verifies production migrations, automatic
+registration, persistent hashes, exact cloud import, unread books and DRM
+notices in Chromium, including the read-only library-refresh button.
 The simulator remains a separate native development program; see the
 [simulator guide](../firmware/SIMULATOR.md).

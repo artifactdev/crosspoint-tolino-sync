@@ -95,8 +95,79 @@ index fb98b7c..771672e 100644
  it('shows the sign-in form only after logout confirms native removal', async () => {
    let finish
    logout.mockReturnValueOnce(new Promise((r) => { finish = r }))
+diff --git a/app/src/Library.jsx b/app/src/Library.jsx
+index 58a0cd2..3b7a25d 100644
+--- a/app/src/Library.jsx
++++ b/app/src/Library.jsx
+@@ -46,7 +46,7 @@ function Row({ session, book }) {
+       <div className="min-w-0 flex-1">
+         <p className="truncate font-display md:text-sm text-[0.95rem] font-semibold text-stone-900">{book.title || book.filename || 'Untitled book'}</p>
+         <p className="truncate text-xs text-stone-500">{book.author}</p>
+-        {book.history_only ? <p className="mt-2 text-xs text-stone-500">Historical reading</p> : <div className="mt-2 flex items-center gap-2">
++        {book.history_only ? <p className="mt-2 text-xs text-stone-500">{book.registered_only ? 'No cloud reading position yet' : 'Historical reading'}</p> : <div className="mt-2 flex items-center gap-2">
+           <ProgressBar value={book.percentage} className="flex-1" />
+           <span className="w-9 text-right font-mono text-[0.7rem] text-stone-500">{pct(book.percentage)}</span>
+         </div>}
+@@ -70,8 +70,9 @@ function sortForTab(list, tab, activity) {
+ 
+ export default function Library({ session, books, summary, activity }) {
+   const [tab, setTab] = useState('reading')
+-  const counts = Object.fromEntries(STATUS.map((s) => [s.id, books.filter((b) => b.status === s.id).length]))
+-  const shown = sortForTab(books.filter((b) => b.status === tab), tab, activity)
++  const registered = books.filter((book) => book.registered_only)
++  const counts = Object.fromEntries(STATUS.map((s) => [s.id, books.filter((b) => b.status === s.id && !b.registered_only).length]))
++  const shown = sortForTab(books.filter((b) => b.status === tab && !b.registered_only), tab, activity)
+   // First book that looks like another synced copy of itself.
+   // Only when the books change, not on every render.
+   const dupe = useMemo(() => firstDuplicate(books), [books])
+@@ -84,6 +85,13 @@ export default function Library({ session, books, summary, activity }) {
+     <div className="px-4 pt-6 pb-4 md:px-8 md:pt-6 lg:px-12">
+       <p className="mb-1 inline-block -rotate-1 pr-12 font-hand text-2xl/7 text-brand-600">{greeting()}</p>
+       <h1 className="pr-12 font-display text-3xl font-semibold tracking-tight text-stone-900 md:text-4xl">Your library</h1>
++      {tab === 'reading' && registered.length > 0 && <section className="mt-5">
++        <h2 className="font-display text-xl font-semibold text-stone-900">Available from Tolino ({registered.length})</h2>
++        <p className="mt-1 text-sm text-stone-500">Registered books without a cloud reading position.</p>
++        <div className="mt-3 grid md:grid-cols-4 md:gap-4">
++          {registered.map(book => <Row key={book.document} session={session} book={book} />)}
++        </div>
++      </section>}
+ 
+       {(hasReadingTime(summary) || activity) && (
+         <div className="mt-4 grid grid-cols-3 divide-x divide-stone-200 rounded-xl bg-surface py-3 text-center ring-1 ring-stone-950/5">
+@@ -142,7 +150,7 @@ export default function Library({ session, books, summary, activity }) {
+             ))}
+           </div>
+         )}
+-        {shown.length === 0 && <LibraryEmpty tab={tab} hasBooks={books.length > 0} />}
++        {shown.length === 0 && !(tab === 'reading' && registered.length > 0) && <LibraryEmpty tab={tab} hasBooks={books.length > 0} />}
+       </div>
+ 
+     </div>
+diff --git a/app/src/Library.test.jsx b/app/src/Library.test.jsx
+index 69aa789..b86d000 100644
+--- a/app/src/Library.test.jsx
++++ b/app/src/Library.test.jsx
+@@ -16,6 +16,18 @@ const reading = { document: 'reading', title: 'Still reading', status: 'reading'
+ 
+ afterEach(cleanup)
+ 
++it('lists registered unread Tolino books without inventing reading progress or paused counts', () => {
++  const book = { document: 'unread', title: 'Unread cloud book', cover_url: '/unread.jpg', status: 'paused', history_only: true, registered_only: true, percentage: null }
++  const { getByText, getByRole, queryByText } = render(<Library session={session} books={[book]} />)
++  expect(getByText('Available from Tolino (1)')).toBeTruthy()
++  expect(getByText('Unread cloud book')).toBeTruthy()
++  expect(getByText('No cloud reading position yet')).toBeTruthy()
++  expect(getByRole('button', { name: /Paused 0/ })).toBeTruthy()
++  expect(queryByText('Historical reading')).toBeNull()
++  expect(queryByText('No books synced yet')).toBeNull()
++  expect(queryByText('Continue reading')).toBeNull()
++})
++
+ describe('Library completion updates', () => {
+   it('shows the grid-derived streak and uses the device total until dated history loads', () => {
+     const summary = { devices: [{ device: 'CrossInk' }], current_streak: 8, seconds: 3600, completed: 0 }
 diff --git a/app/src/Settings.jsx b/app/src/Settings.jsx
-index a7298ea..3db904c 100644
+index a7298ea..f6c3c19 100644
 --- a/app/src/Settings.jsx
 +++ b/app/src/Settings.jsx
 @@ -47,6 +47,7 @@ const HINTS = {
@@ -107,8 +178,98 @@ index a7298ea..3db904c 100644
    audiobookshelf: 'Keeps your place between the ebook and the audiobook. Create an API key in Audiobookshelf under Settings, Users, API Keys.',
    jellyfin: 'Syncs reading progress with your Jellyfin book library (Jellyfin 12.0 or newer). Sign in with your Jellyfin username and password.',
    bookorbit: 'Syncs progress both ways, adds clippings as highlights, and exchanges reading sessions for matched books. Imports BookOrbit history and exports sessions recorded by newer CrossInk firmware. Includes other BookOrbit reader history alongside your device stats. Repeated sessions are counted once.',
+@@ -560,6 +561,24 @@ function Service({ session, conn, onChange }) {
+             conn.queue.dead > 0 && `${conn.queue.dead} item${conn.queue.dead === 1 ? '' : 's'} failed`].filter(Boolean).join(' · ')}
+         </p>
+       )}
++      {conn.linked && conn.id === 'tolino' && (
++        <div className="mt-2 space-y-2 text-xs text-stone-600">
++          <p role="status">{conn.library?.running ? 'Registering cloud library… ' : ''}
++            {conn.library?.registered ?? 0} books registered · {conn.library?.skipped ?? 0} skipped · {conn.library?.errors ?? 0} failed
++          </p>
++          <button type="button" disabled={!!busy || conn.library?.running}
++            className="rounded-full px-3 py-2 font-semibold text-brand-600 ring-1 ring-brand-200"
++            onClick={() => act('library', async () => {
++              const result = await api.refreshConnectorLibrary(session, conn.id)
++              notify({ title: 'Tolino library registered',
++                detail: `${result.registered} registered, ${result.skipped} skipped, ${result.errors} failed. Cloud reading positions are read only.` })
++            })}>
++            {busy === 'library' ? 'Registering…' : 'Refresh and register library'}
++          </button>
++          {conn.last_error && <p role="alert" className="text-red-700">{conn.last_error}</p>}
++          {conn.library?.notices?.map((notice, index) => <p role="status" key={index}>{notice.title}: {notice.message}</p>)}
++        </div>
++      )}
+       {conn.linked && conn.queue_errors?.length > 0 && (
+         <div className="mt-2 space-y-1 text-xs">
+           {conn.queue_errors.map((e) => {
+@@ -630,7 +649,7 @@ function Services({ session }) {
+   const [data, error, reload, loading] = useLoad(() => api.connectors(session), [session], `connectors ${session.username}@${session.server}`)
+   const reloadRef = useRef(reload)
+   reloadRef.current = reload
+-  const pending = data?.connectors?.some((c) => c.linked && c.queue?.pending > 0)
++  const pending = data?.connectors?.some((c) => c.linked && (c.queue?.pending > 0 || c.library?.running))
+   useEffect(() => {
+     if (!pending || loading) return
+     const timer = setTimeout(() => reloadRef.current(), 5000)
+diff --git a/app/src/Settings.test.jsx b/app/src/Settings.test.jsx
+index 124ed9e..7c2f6b8 100644
+--- a/app/src/Settings.test.jsx
++++ b/app/src/Settings.test.jsx
+@@ -8,7 +8,7 @@ vi.mock('./api.js', () => ({
+   showUntitled: vi.fn(() => false),
+   setShowUntitled: vi.fn(),
+   cached: { readingGoals: () => null },
+-  api: { exportAccount: vi.fn(), importAccount: vi.fn(), oauthBegin: vi.fn(), oauthComplete: vi.fn(), connectors: vi.fn(), linkConnector: vi.fn(), setClientId: vi.fn(), removeClientId: vi.fn(), syncConnector: vi.fn(), unlinkConnector: vi.fn(), clearData: vi.fn(), deleteAccount: vi.fn(), autoPause: vi.fn(), setAutoPause: vi.fn(), profile: vi.fn(), setProfile: vi.fn(), setDisplayName: vi.fn(), recoveryToken: vi.fn(() => Promise.resolve({ token: null })), newRecoveryToken: vi.fn() },
++  api: { exportAccount: vi.fn(), importAccount: vi.fn(), oauthBegin: vi.fn(), oauthComplete: vi.fn(), connectors: vi.fn(), linkConnector: vi.fn(), setClientId: vi.fn(), removeClientId: vi.fn(), syncConnector: vi.fn(), refreshConnectorLibrary: vi.fn(), unlinkConnector: vi.fn(), clearData: vi.fn(), deleteAccount: vi.fn(), autoPause: vi.fn(), setAutoPause: vi.fn(), profile: vi.fn(), setProfile: vi.fn(), setDisplayName: vi.fn(), recoveryToken: vi.fn(() => Promise.resolve({ token: null })), newRecoveryToken: vi.fn() },
+ }))
+ vi.mock('./shareCard.js', () => ({ saveFile: vi.fn() }))
+ vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
+@@ -224,6 +224,42 @@ describe('service delivery status', () => {
+     status: 'ok', queue: { pending: 0, dead: 0 }, ...extra })
+   const renderSettings = () => render(<Settings session={reader} theme={['system', vi.fn()]} onSession={vi.fn()} onLogout={vi.fn()} />)
+ 
++  it('shows Tolino registration counts, per-book notices and explicit refresh errors', async () => {
++    api.connectors.mockResolvedValue({ connectors: [connector({ id: 'tolino', name: 'Tolino',
++      last_error: 'Inventory unavailable', library: { registered: 2, skipped: 1, errors: 1, running: false,
++        notices: [{ title: 'Protected book', message: 'DRM-protected or unsupported format' }] } })] })
++    api.refreshConnectorLibrary.mockRejectedValue(new Error('Bridge offline'))
++    const { notify } = await import('./ui.jsx')
++    renderSettings()
++    expect(await screen.findByText('2 books registered · 1 skipped · 1 failed')).toBeTruthy()
++    expect(screen.getByText('Protected book: DRM-protected or unsupported format')).toBeTruthy()
++    expect(screen.getByRole('alert').textContent).toBe('Inventory unavailable')
++    fireEvent.click(screen.getByRole('button', { name: 'Refresh and register library' }))
++    await waitFor(() => expect(api.refreshConnectorLibrary).toHaveBeenCalledWith(reader, 'tolino'))
++    expect(api.syncConnector).not.toHaveBeenCalled()
++    await waitFor(() => expect(notify).toHaveBeenCalledWith({
++      error: true, title: "Tolino: that didn't work", detail: 'Bridge offline',
++    }))
++  })
++
++  it('polls active Tolino registration and enables refresh after it completes', async () => {
++    vi.useFakeTimers()
++    const conn = connector({ id: 'tolino', name: 'Tolino' })
++    api.connectors.mockResolvedValueOnce({ connectors: [{ ...conn, library: { running: true, registered: 1 } }] })
++      .mockResolvedValue({ connectors: [{ ...conn, library: { running: false, registered: 2 } }] })
++    api.refreshConnectorLibrary.mockResolvedValue({ registered: 2, skipped: 0, errors: 0 })
++    await act(async () => renderSettings())
++    expect(screen.getByRole('button', { name: 'Refresh and register library' }).disabled).toBe(true)
++    await act(async () => vi.advanceTimersByTimeAsync(5000))
++    expect(screen.getByText('2 books registered · 0 skipped · 0 failed')).toBeTruthy()
++    expect(screen.getByRole('button', { name: 'Refresh and register library' }).disabled).toBe(false)
++    await act(async () => vi.advanceTimersByTimeAsync(15000))
++    expect(api.connectors).toHaveBeenCalledTimes(2)
++    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh and register library' })))
++    expect(api.refreshConnectorLibrary).toHaveBeenCalledWith(reader, 'tolino')
++    expect(api.connectors).toHaveBeenCalledTimes(3)
++  })
++
+   it('shows queued items and saved clipping failures in Settings', async () => {
+     api.connectors.mockResolvedValue({ connectors: [connector({ queue: { pending: 2, dead: 1 },
+       queue_errors: [{ kind: 'clipping', count: 1, message: 'clipping has no position (update the reader firmware)' }] })] })
 diff --git a/app/src/api.js b/app/src/api.js
-index 5e98bc9..8b8c135 100644
+index 5e98bc9..51fcec0 100644
 --- a/app/src/api.js
 +++ b/app/src/api.js
 @@ -44,6 +44,19 @@ function read(key) {
@@ -143,6 +304,14 @@ index 5e98bc9..8b8c135 100644
        },
      })
    } catch (e) {
+@@ -603,6 +617,7 @@ export const api = {
+   linkConnector: (s, id, credential) => call(s, `/api/v1/connectors/${id}`, { method: 'PUT', body: JSON.stringify({ credential }) }),
+   unlinkConnector: (s, id) => call(s, `/api/v1/connectors/${id}`, { method: 'DELETE' }),
+   syncConnector: (s, id) => call(s, `/api/v1/connectors/${id}/sync`, { method: 'POST' }),
++  refreshConnectorLibrary: (s, id) => call(s, `/api/v1/connectors/${id}/library/refresh`, { method: 'POST' }),
+   addMicroblogClipping: (s, doc, clippingId) => call(s, `/api/v1/connectors/microblog/clippings/${encodeURIComponent(doc)}/${encodeURIComponent(clippingId)}`, { method: 'POST' }),
+   microblogDestinations: (s) => call(s, '/api/v1/connectors/microblog/destinations'),
+   setMicroblogDestination: (s, destination) => call(s, '/api/v1/connectors/microblog/destination', { method: 'PUT', body: JSON.stringify({ destination }) }),
 diff --git a/app/src/web-login.test.js b/app/src/web-login.test.js
 new file mode 100644
 index 0000000..0fa908c
@@ -193,6 +362,22 @@ index 0000000..0fa908c
 +  fetchMock.mockRejectedValueOnce(new TypeError('Network unavailable'))
 +  await expect(webLogin()).rejects.toThrow('Network unavailable')
 +})
+diff --git a/migrations/0050_tolino_library.sql b/migrations/0050_tolino_library.sql
+new file mode 100644
+index 0000000..1b9a46f
+--- /dev/null
++++ b/migrations/0050_tolino_library.sql
+@@ -0,0 +1,10 @@
++CREATE TABLE tolino_library (
++  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++  external_id TEXT NOT NULL,
++  title TEXT NOT NULL,
++  document TEXT,
++  status TEXT NOT NULL CHECK (status IN ('registered', 'skipped', 'error')),
++  message TEXT,
++  updated_at INTEGER NOT NULL,
++  PRIMARY KEY (user_id, external_id)
++);
 diff --git a/src/app.ts b/src/app.ts
 index 4a760c7..906a97e 100644
 --- a/src/app.ts
@@ -354,10 +539,18 @@ index 6cce9ce..3c9732c 100644
  
  /** Resolve the device's XPath in the actual EPUB, including absolute sibling indices. */
 diff --git a/src/connectors/fanin.ts b/src/connectors/fanin.ts
-index ee8c0e9..0113d71 100644
+index ee8c0e9..0e77785 100644
 --- a/src/connectors/fanin.ts
 +++ b/src/connectors/fanin.ts
-@@ -53,8 +53,10 @@ export async function pollConnector(
+@@ -24,6 +24,7 @@ import {
+ } from './store.js';
+ import { resolveMatch } from './runner.js';
+ import { spotifyPaused } from './spotify.js';
++import { syncTolinoLibrary } from './tolino-library.js';
+ import { ConnectorOperationError, type InboundChange, type InboundHighlight, type HttpTransport } from './types.js';
+ 
+ // Skip an inbound change whose percentage already matches our stored progress
+@@ -53,8 +54,10 @@ export async function pollConnector(
    function apply(ch: InboundChange, document: string): number {
      const exact = ch.progress !== undefined;
      const current = latestProgress(db, userId, document);
@@ -370,7 +563,7 @@ index ee8c0e9..0113d71 100644
      if (dated && current && updatedAt <= current.updated_at) return 0;
      const pct = exact ? ch.percentage : ch.finished || ch.percentage >= 0.999 ? 1 : ch.percentage;
      // Furthest-read-only sources (Kindle FRL): apply only when ADVANCING the
-@@ -62,7 +64,9 @@ export async function pollConnector(
+@@ -62,7 +65,9 @@ export async function pollConnector(
      // behind when the user has read further anywhere — so this also covers
      // undated annotations, which can't be ordered by timestamp at all.
      if (ch.furthestReadOnly && current && pct <= current.percentage) return 0;
@@ -381,18 +574,39 @@ index ee8c0e9..0113d71 100644
        (!exact || current.progress.replace(/\[1\]/g, '') === ch.progress!.replace(/\[1\]/g, ''));
      if (samePosition && !exact) return 0;
      // Percentage-only providers use recorded samples; exact providers never borrow a stale page.
-@@ -209,12 +213,12 @@ function importHighlights(db: DB, userId: number, document: string, items: Inbou
+@@ -209,12 +214,33 @@ function importHighlights(db: DB, userId: number, document: string, items: Inbou
    }
  }
  
 -/** Poll library-wide providers; per-book providers refresh on progress requests. */
 +/** Poll library-wide providers and Tolino's sidecar-matched books. */
++export async function registerTolinoLibraries(db: DB, http: HttpTransport = fetchTransport): Promise<void> {
++  for (const { user_id, connector_id } of listAllEnabledAccounts(db)) {
++    if (connector_id !== 'tolino') continue;
++    try {
++      await syncTolinoLibrary(db, user_id, http);
++      await pollConnector(db, user_id, 'tolino', http);
++    } catch (error) {
++      console.error(JSON.stringify({ msg: 'Tolino initial library sync failed', user_id,
++        error: error instanceof Error ? error.message : String(error) }));
++    }
++  }
++}
++
  export async function pollAll(db: DB, http: HttpTransport = fetchTransport): Promise<number> {
    let total = 0;
    for (const { user_id, connector_id } of listAllEnabledAccounts(db)) {
      const conn = getConnector(connector_id);
 -    if (!conn?.capabilities.read || !conn.pullChanges) continue;
 +    if (!conn?.capabilities.read || (!conn.pullChanges && connector_id !== 'tolino')) continue;
++    if (connector_id === 'tolino') {
++      try {
++        await syncTolinoLibrary(db, user_id, http);
++      } catch (error) {
++        console.error(JSON.stringify({ msg: 'Tolino library registration failed', user_id,
++          error: error instanceof Error ? error.message : String(error) }));
++      }
++    }
      total += await pollConnector(db, user_id, connector_id, http);
    }
    return total;
@@ -441,6 +655,18 @@ index 2b6c627..9086cb7 100644
      if (!stillCurrent()) return;
      if (result.ok) {
        // Persist (or clear) the per-book condition so the review UI can show it.
+diff --git a/src/connectors/store.ts b/src/connectors/store.ts
+index f6e11b6..4f56442 100644
+--- a/src/connectors/store.ts
++++ b/src/connectors/store.ts
+@@ -126,6 +126,7 @@ export function decryptCredential(row: AccountRow, db?: DB): Credential {
+ }
+ 
+ export function deleteAccount(db: DB, userId: number, connectorId: string): void {
++  if (connectorId === 'tolino') db.prepare('DELETE FROM tolino_library WHERE user_id = ?').run(userId);
+   if (connectorId === 'microblog') {
+     for (const table of ['microblog_clipping_selections', 'microblog_clipping_posts']) db.prepare(`DELETE FROM ${table} WHERE user_id=?`).run(userId);
+   }
 diff --git a/src/connectors/tolino-epub.ts b/src/connectors/tolino-epub.ts
 new file mode 100644
 index 0000000..d5fdd92
@@ -586,12 +812,154 @@ index 0000000..d5fdd92
 +    return locator;
 +  });
 +}
+diff --git a/src/connectors/tolino-library.ts b/src/connectors/tolino-library.ts
+new file mode 100644
+index 0000000..65ef837
+--- /dev/null
++++ b/src/connectors/tolino-library.ts
+@@ -0,0 +1,136 @@
++import type { DB } from '../db/db.js';
++import { withTransaction } from '../db/db.js';
++import { nowSeconds } from '../models/sync.js';
++import { parseMetadata, saveDocumentMetadata } from '../routes/kosync.js';
++import { cacheTolinoArchive, tolinoArchive, tolinoConnection, tolinoDocumentHash } from './tolino.js';
++import { decryptCredential, getAccount, getMatch, setAccountStatus } from './store.js';
++import { ConnectorOperationError, type HttpTransport } from './types.js';
++import { fetchTransport } from './registry.js';
++
++const pending = new WeakMap<DB, Map<number, Promise<void>>>();
++
++interface LibraryRow {
++  external_id: string;
++  title: string;
++  document: string | null;
++  status: string;
++  message: string | null;
++}
++
++export function tolinoLibraryStatus(db: DB, userId: number) {
++  const rows = db.prepare('SELECT external_id, title, document, status, message FROM tolino_library WHERE user_id = ?')
++    .all(userId) as unknown as LibraryRow[];
++  return {
++    running: pending.get(db)?.has(userId) ?? false,
++    registered: rows.filter(row => row.status === 'registered').length,
++    skipped: rows.filter(row => row.status === 'skipped').length,
++    errors: rows.filter(row => row.status === 'error').length,
++    notices: rows.filter(row => row.message).map(row => ({ title: row.title, message: row.message })),
++  };
++}
++
++/** Register only verified binary identities. No reader position or cloud write is invented. */
++export function syncTolinoLibrary(db: DB, userId: number, http: HttpTransport = fetchTransport): Promise<void> {
++  let jobs = pending.get(db);
++  if (!jobs) { jobs = new Map(); pending.set(db, jobs); }
++  const existing = jobs.get(userId);
++  if (existing) return existing;
++  const account = getAccount(db, userId, 'tolino');
++  const job = discover(db, userId, http).then(() => {
++    const fresh = getAccount(db, userId, 'tolino');
++    if (fresh && fresh.cred_enc === account?.cred_enc && fresh.status === 'ok') {
++      setAccountStatus(db, userId, 'tolino', 'ok', null);
++    }
++  }, error => {
++    const fresh = getAccount(db, userId, 'tolino');
++    if (fresh && fresh.cred_enc === account?.cred_enc) {
++      setAccountStatus(db, userId, 'tolino', fresh.status, error instanceof Error ? error.message : 'Tolino library registration failed');
++    }
++    throw error;
++  }).finally(() => jobs.delete(userId));
++  jobs.set(userId, job);
++  return job;
++}
++
++async function discover(db: DB, userId: number, http: HttpTransport): Promise<void> {
++  const account = getAccount(db, userId, 'tolino');
++  if (!account?.enabled || account.status !== 'ok') return;
++  const credential = decryptCredential(account);
++  const { origin, headers } = tolinoConnection(credential);
++  const stillLinked = () => {
++    const fresh = getAccount(db, userId, 'tolino');
++    return fresh?.enabled && fresh.status === 'ok' && fresh.cred_enc === account.cred_enc;
++  };
++  const response = await http(origin + '/api/inventory', {
++    method: 'GET', headers, redirect: 'error', signal: AbortSignal.timeout(30_000),
++  });
++  if (response.status !== 200) throw new ConnectorOperationError(`Tolino library inventory failed (HTTP ${response.status})`, true);
++  const data = await response.json() as { PublicationInventory?: { ebook?: unknown; edata?: unknown } };
++  const inventory = data?.PublicationInventory;
++  if (!Array.isArray(inventory?.ebook) || !Array.isArray(inventory?.edata)) {
++    throw new Error('Invalid Tolino library inventory; registration stopped');
++  }
++  const items = [...inventory.ebook, ...inventory.edata] as {
++    epubMetaData?: { identifier?: unknown; title?: unknown; author?: { name?: unknown }[];
++      deliverable?: { contentFormat?: unknown; contentEncrypted?: unknown; contentProtectionType?: unknown }[];
++      contentProtectionType?: unknown; protectionType?: unknown };
++    contentProtectionType?: unknown;
++  }[];
++  const seen = new Set<string>();
++  const save = db.prepare(`INSERT INTO tolino_library (user_id, external_id, title, document, status, message, updated_at)
++    VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, external_id) DO UPDATE SET
++    title=excluded.title, document=excluded.document, status=excluded.status, message=excluded.message, updated_at=excluded.updated_at`);
++  for (const item of items) {
++    if (!stillLinked()) return;
++    const meta = item?.epubMetaData;
++    if (typeof meta?.identifier !== 'string' || !meta.identifier.trim() ||
++        typeof meta.title !== 'string' || !meta.title.trim()) {
++      throw new Error('Tolino inventory entry has no valid identifier/title');
++    }
++    const id = meta.identifier, title = meta.title;
++    if (seen.has(id)) continue;
++    seen.add(id);
++    const deliverable = meta.deliverable?.[0];
++    const protections = [item.contentProtectionType, meta.contentProtectionType, meta.protectionType,
++      deliverable?.contentProtectionType];
++    const supported = String(deliverable?.contentFormat).toLowerCase() === 'application/epub+zip' &&
++      deliverable?.contentEncrypted === false &&
++      protections.every(value => ['', 'UNPROTECTED', 'WATERMARK', 'WATERMARKV1', 'NONE'].includes(String(value ?? '').toUpperCase()));
++    if (!supported) {
++      save.run(userId, id, title, null, 'skipped', 'DRM-protected or unsupported format; EPUB registration unavailable', nowSeconds());
++      continue;
++    }
++    try {
++      const previous = db.prepare('SELECT document FROM tolino_library WHERE user_id=? AND external_id=? AND status=?')
++        .get(userId, id, 'registered') as { document: string } | undefined;
++      let document = previous?.document;
++      if (!document) {
++        const bytes = await tolinoArchive(credential, id, http);
++        document = tolinoDocumentHash(bytes);
++        await cacheTolinoArchive(credential, id, document, bytes);
++      }
++      if (!stillLinked()) return;
++      const match = getMatch(db, userId, 'tolino', document);
++      if (match?.external_id && match.external_id !== id && ['manual', 'sidecar'].includes(match.source)) {
++        throw new Error('Existing exact book match conflicts with this binary EPUB; registration needs review');
++      }
++      const metadata = parseMetadata({ title, authors: (meta.author ?? []).map(author => author.name)
++        .filter((name): name is string => typeof name === 'string').join(', '), tolino_id: id });
++      if (!metadata) throw new Error('Tolino metadata cannot be registered');
++      withTransaction(db, () => {
++        saveDocumentMetadata(db, userId, document, metadata, nowSeconds());
++        save.run(userId, id, title, document, 'registered', null, nowSeconds());
++      });
++    } catch (error) {
++      if (!stillLinked()) return;
++      const message = error instanceof Error ? error.message : 'Tolino registration failed';
++      console.error(JSON.stringify({ msg: 'Tolino library book registration failed', user_id: userId, title, error: message }));
++      save.run(userId, id, title, null, 'error', message, nowSeconds());
++    }
++  }
++  if (!stillLinked()) return;
++  // Removed cloud items cease discovery, without deleting their existing reading data.
++  for (const row of db.prepare('SELECT external_id FROM tolino_library WHERE user_id=?').all(userId)) {
++    if (!seen.has(String(row.external_id))) db.prepare('DELETE FROM tolino_library WHERE user_id=? AND external_id=?').run(userId, row.external_id);
++  }
++}
 diff --git a/src/connectors/tolino.ts b/src/connectors/tolino.ts
 new file mode 100644
-index 0000000..5c375b9
+index 0000000..0caf510
 --- /dev/null
 +++ b/src/connectors/tolino.ts
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,169 @@
 +import { createHash } from 'node:crypto';
 +import { cachedEpub } from './bookfusion-epub.js';
 +import { tolinoPoint, tolinoXPath } from './tolino-epub.js';
@@ -602,7 +970,7 @@ index 0000000..5c375b9
 +  throw new ConnectorOperationError(message, retryable);
 +}
 +
-+function connection(credential: Credential) {
++export function tolinoConnection(credential: Credential) {
 +  // An operator-configured destination, never a user-controlled server-side fetch URL.
 +  const url = new URL(process.env.TOLINO_HELPER_URL ?? 'http://127.0.0.1:8081');
 +  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
@@ -627,7 +995,7 @@ index 0000000..5c375b9
 +}
 +
 +async function remote(credential: Credential, id: string, http: HttpTransport): Promise<Remote> {
-+  const { origin, headers } = connection(credential);
++  const { origin, headers } = tolinoConnection(credential);
 +  const res = await http(`${origin}/api/sync-position?id=${encodeURIComponent(id)}`, {
 +    method: 'GET', headers, redirect: 'error', signal: AbortSignal.timeout(10_000),
 +  });
@@ -653,28 +1021,45 @@ index 0000000..5c375b9
 +
 +async function book(credential: Credential, match: Match, http: HttpTransport, ctx?: ConnectorContext) {
 +  if (!match.fromSidecar || !ctx?.document) failure('Tolino sync requires the downloaded book sidecar and binary document matching');
-+  const { origin, headers } = connection(credential);
-+  return cachedEpub(['tolino', origin, credential.token, match.externalId, ctx.document], async signal => {
-+    const res = await http(`${origin}/api/download?id=${encodeURIComponent(match.externalId)}`, {
-+      method: 'GET', headers, redirect: 'error', signal,
-+    });
-+    check(res.status);
-+    if (!res.body) failure('Tolino EPUB response has no body');
-+    const reader = res.body.getReader(), chunks: Uint8Array[] = [];
-+    let size = 0;
-+    try {
-+      for (;;) {
-+        const { done, value } = await reader.read();
-+        if (done) break;
-+        size += value.length;
-+        if (size > 200 * 1024 * 1024) failure('Tolino EPUB exceeds 200 MiB');
-+        chunks.push(value);
-+      }
-+    } finally { await reader.cancel(); reader.releaseLock(); }
-+    const bytes = Buffer.concat(chunks, size);
++  const { origin } = tolinoConnection(credential);
++  return cachedEpub(['tolino', origin, credential.token, match.externalId, ctx.document], async (signal) => {
++    const bytes = await tolinoArchive(credential, match.externalId, http, signal);
 +    if (tolinoDocumentHash(bytes) !== ctx.document) failure('Tolino EPUB edition mismatch: use binary matching and the same downloaded EPUB');
-+    return { ...res, body: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) };
++    return archiveResponse(bytes);
 +  });
++}
++
++function archiveResponse(bytes: Buffer) {
++  return { status: 200, json: async () => null, text: async () => '',
++    body: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } }) };
++}
++
++export async function tolinoArchive(credential: Credential, id: string, http: HttpTransport, signal?: AbortSignal): Promise<Buffer> {
++  const { origin, headers } = tolinoConnection(credential);
++  const timeout = AbortSignal.timeout(120_000);
++  const res = await http(`${origin}/api/download?id=${encodeURIComponent(id)}`, {
++    method: 'GET', headers, redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
++  });
++  check(res.status);
++  if (!res.body) failure('Tolino EPUB response has no body');
++  const reader = res.body.getReader(), chunks: Uint8Array[] = [];
++  let size = 0;
++  try {
++    for (;;) {
++      const { done, value } = await reader.read();
++      if (done) break;
++      size += value.length;
++      if (size > 200 * 1024 * 1024) failure('Tolino EPUB exceeds 200 MiB');
++      chunks.push(value);
++    }
++  } finally { await reader.cancel(); reader.releaseLock(); }
++  if (!size) failure('Tolino EPUB response is empty');
++  return Buffer.concat(chunks, size);
++}
++
++export async function cacheTolinoArchive(credential: Credential, id: string, document: string, bytes: Buffer) {
++  const { origin } = tolinoConnection(credential);
++  return cachedEpub(['tolino', origin, credential.token, id, document], async () => archiveResponse(bytes));
 +}
 +
 +export const tolinoConnector: Connector = {
@@ -690,7 +1075,7 @@ index 0000000..5c375b9
 +    { key: 'finished', label: 'Send finished reading positions to Tolino', default: false, gates: 'finished' },
 +  ],
 +  async validate(credential, http) {
-+    const { origin, headers } = connection(credential);
++    const { origin, headers } = tolinoConnection(credential);
 +    const res = await http(`${origin}/api/sync-status`, { method: 'GET', headers, redirect: 'error',
 +      signal: AbortSignal.timeout(10_000) });
 +    check(res.status);
@@ -719,7 +1104,7 @@ index 0000000..5c375b9
 +    }
 +    const epub = await book(credential, match, http, ctx);
 +    const position = await tolinoPoint(epub, event.progress);
-+    const { origin, headers } = connection(credential);
++    const { origin, headers } = tolinoConnection(credential);
 +    const body = JSON.stringify({
 +      id: match.externalId, revision: cloud.revision, expectedModified: cloud.position?.modified ?? null,
 +      position, progress: event.percentage, modified: event.timestamp * 1000,
@@ -744,6 +1129,29 @@ index 0000000..5c375b9
 +    return { ok: true };
 +  },
 +};
+diff --git a/src/index.ts b/src/index.ts
+index cbb0a51..829c566 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -6,7 +6,7 @@ import { secretsEnabled } from './crypto/secrets.js';
+ import { loadSessionSecret } from './auth/session.js';
+ import { backfillMasterAccounts } from './routes/auth.js';
+ import { startQueueWorker } from './connectors/runner.js';
+-import { pollMatched, pollSpotify, startFanInWorker } from './connectors/fanin.js';
++import { registerTolinoLibraries, pollMatched, pollSpotify, startFanInWorker } from './connectors/fanin.js';
+ import { autoPause } from './models/pause.js';
+ 
+ const DATABASE_PATH = process.env.DATABASE_PATH ?? '/data/crosspoint.db';
+@@ -27,6 +27,9 @@ if (connectorsEnabled) {
+   // Fan-in: pull position changes back from bidirectional connectors (e.g.
+   // Audiobookshelf audiobook -> ebook).
+   startFanInWorker(db, Number(process.env.FANIN_INTERVAL_MS ?? 5 * 60_000));
++  void registerTolinoLibraries(db).catch(error => console.error(JSON.stringify({
++    msg: 'initial connector library sync failed', error: error instanceof Error ? error.message : String(error),
++  })));
+   // Jellyfin and Spotify per-match pulls (hourly); Audiobookshelf every 15 minutes.
+   startFanInWorker(db, 60 * 60_000, (d) => pollMatched(d, 'jellyfin'));
+   startFanInWorker(db, 15 * 60_000, (d) => pollMatched(d, 'audiobookshelf'));
 diff --git a/src/routes/kosync.ts b/src/routes/kosync.ts
 index 8f6b5d4..d705d23 100644
 --- a/src/routes/kosync.ts
@@ -758,10 +1166,18 @@ index 8f6b5d4..d705d23 100644
      autoPause(db, { userId: user.id, document: canonical });
      const row = db
 diff --git a/src/routes/v1/connectors.ts b/src/routes/v1/connectors.ts
-index 3ba6ee6..3d70e1e 100644
+index 3ba6ee6..684af7e 100644
 --- a/src/routes/v1/connectors.ts
 +++ b/src/routes/v1/connectors.ts
-@@ -140,9 +140,10 @@ export const CREDENTIAL_HTTPS_REQUIRED = 'Connector credentials require HTTPS to
+@@ -7,6 +7,7 @@ import { fetchTransport, getConnector, listConnectors } from '../../connectors/r
+ import { purgeConnector, queueDepth, queueErrors } from '../../connectors/queue.js';
+ import { backfillConnector } from '../../connectors/fanout.js';
+ import { pollConnector, jellyfinFirstSync, spotifyFirstSync } from '../../connectors/fanin.js';
++import { syncTolinoLibrary, tolinoLibraryStatus } from '../../connectors/tolino-library.js';
+ import { resolveMatch } from '../../connectors/runner.js';
+ import { absTracks } from '../../connectors/audiobookshelf.js';
+ import { CLIENT_ID_RE, CLIENT_ID_REJECTED, playWhenDeviceAppears, spotifyPlan, spotifyResume, spotifyTracks } from '../../connectors/spotify.js';
+@@ -140,9 +141,10 @@ export const CREDENTIAL_HTTPS_REQUIRED = 'Connector credentials require HTTPS to
    + 'If HTTPS ends at a reverse proxy, configure TRUST_PROXY=true on the Sync server '
    + 'and have the proxy send X-Forwarded-Proto: https. Only enable proxy trust when direct access to Sync is blocked.';
  
@@ -773,7 +1189,7 @@ index 3ba6ee6..3d70e1e 100644
    const incoming = c.env?.incoming;
    const peerAddress = incoming?.socket?.remoteAddress;
    // Docker NAT can give a host-local request a bridge peer address. Only an
-@@ -168,7 +169,8 @@ export function connectorRoutes(
+@@ -168,7 +170,8 @@ export function connectorRoutes(
    transport: HttpTransport = fetchTransport,
    trustProxy = false,
    basePath = '',
@@ -783,7 +1199,17 @@ index 3ba6ee6..3d70e1e 100644
  ): Hono<AppEnv> {
    const app = new Hono<AppEnv>();
  
-@@ -234,7 +236,7 @@ export function connectorRoutes(
+@@ -202,7 +205,8 @@ export function connectorRoutes(
+             client_id: getClientId(db, user.id, conn.id),
+             shared: !!conn.oauth().clientId,
+           } } : {}),
+-          library_refresh: !!conn.refreshLibrary,
++          library_refresh: !!conn.refreshLibrary || conn.id === 'tolino',
++          ...(conn.id === 'tolino' && account ? { library: tolinoLibraryStatus(db, user.id), last_error: account.last_error } : {}),
+           asin_lookup: !!conn.lookup,
+           matches: conn.matchBy !== 'document',
+           linked: !!account,
+@@ -234,7 +238,7 @@ export function connectorRoutes(
      if (conn.oauth) {
        return c.json({ code: 2003, message: `Update the CrossPoint Sync app to sign in with ${conn.displayName}.` }, 400);
      }
@@ -792,7 +1218,19 @@ index 3ba6ee6..3d70e1e 100644
        return c.json({ code: 2003, message: CREDENTIAL_HTTPS_REQUIRED }, 400);
      }
      if (!secretsEnabled()) {
-@@ -278,7 +280,7 @@ export function connectorRoutes(
+@@ -263,6 +267,11 @@ export function connectorRoutes(
+     const user = c.get('user');
+     const first = !getAccount(db, user.id, conn.id);
+     upsertAccount(db, user.id, conn.id, cred as Record<string, unknown>, result.accountLabel ?? null);
++    if (conn.id === 'tolino') {
++      void syncTolinoLibrary(db, user.id, transport).then(() => pollConnector(db, user.id, 'tolino', transport))
++        .catch(error => console.error(JSON.stringify({ msg: 'Tolino initial library sync failed', user_id: user.id,
++          error: error instanceof Error ? error.message : String(error) })));
++    }
+     if (conn.id === 'bookorbit') void importBookorbitStats(db, user.id, transport);
+     if (first && conn.id === 'jellyfin') {
+       jellyfinFirstSync(db, user.id, transport).catch((err) =>
+@@ -278,7 +287,7 @@ export function connectorRoutes(
      const conn = getConnector(c.req.param('id'));
      if (!conn) return c.json({ code: 2003, message: 'Unknown connector' }, 404);
      if (!conn.beginLink) return c.json({ code: 2003, message: 'Connector has no device link' }, 400);
@@ -801,7 +1239,7 @@ index 3ba6ee6..3d70e1e 100644
        return c.json({ code: 2003, message: CREDENTIAL_HTTPS_REQUIRED }, 400);
      }
      if (!secretsEnabled()) {
-@@ -304,7 +306,7 @@ export function connectorRoutes(
+@@ -304,7 +313,7 @@ export function connectorRoutes(
      const conn = getConnector(c.req.param('id'));
      if (!conn) return c.json({ code: 2003, message: 'Unknown connector' }, 404);
      if (!conn.pollLink) return c.json({ code: 2003, message: 'Connector has no device link' }, 400);
@@ -810,7 +1248,7 @@ index 3ba6ee6..3d70e1e 100644
        return c.json({ code: 2003, message: CREDENTIAL_HTTPS_REQUIRED }, 400);
      }
      let deviceCode: unknown;
-@@ -374,7 +376,7 @@ export function connectorRoutes(
+@@ -374,7 +383,7 @@ export function connectorRoutes(
      const config = conn.oauth!();
      const clientId = getClientId(db, user.id, conn.id) ?? config.clientId;
      if (!clientId) return c.json({ code: 2003, message: `Add your ${conn.displayName} app's Client ID first.` }, 400);
@@ -819,7 +1257,27 @@ index 3ba6ee6..3d70e1e 100644
        return c.json({ code: 2003, message: CREDENTIAL_HTTPS_REQUIRED }, 400);
      }
      if (!secretsEnabled()) {
-@@ -487,7 +489,7 @@ export function connectorRoutes(
+@@ -430,11 +439,18 @@ export function connectorRoutes(
+   app.post('/connectors/:id/library/refresh', async (c) => {
+     const conn = getConnector(c.req.param('id'));
+     if (!conn) return c.json({ code: 2003, message: 'Unknown connector' }, 404);
+-    if (!conn.refreshLibrary) return c.json({ code: 2003, message: 'Connector has no library to refresh' }, 400);
++    if (!conn.refreshLibrary && conn.id !== 'tolino') return c.json({ code: 2003, message: 'Connector has no library to refresh' }, 400);
+     const user = c.get('user');
+     const account = getAccount(db, user.id, conn.id);
+     if (!account) return c.json({ code: 2003, message: 'Connector not linked' }, 400);
+     try {
++      if (conn.id === 'tolino') {
++        await syncTolinoLibrary(db, user.id, transport);
++        const pulled = await pollConnector(db, user.id, 'tolino', transport);
++        const library = tolinoLibraryStatus(db, user.id);
++        return c.json({ count: library.registered, pulled, ...library });
++      }
++      if (!conn.refreshLibrary) throw new Error('Connector has no library to refresh');
+       const result = await conn.refreshLibrary(decryptCredential(account, db), transport);
+       return c.json(result ?? { count: null });
+     } catch (err) {
+@@ -487,7 +503,7 @@ export function connectorRoutes(
    });
  
    app.post('/connectors/microblog/clipping-posts/:document/recreate', async (c) => {
@@ -828,7 +1286,7 @@ index 3ba6ee6..3d70e1e 100644
      const document = c.req.param('document');
      if (!isValidDocument(document)) return c.json({ message: 'Invalid book' }, 400);
      const body = await c.req.json().catch(() => null) as { target?: unknown } | null;
-@@ -498,7 +500,7 @@ export function connectorRoutes(
+@@ -498,7 +514,7 @@ export function connectorRoutes(
    });
  
    app.put('/connectors/microblog/destination', async (c) => {
@@ -837,11 +1295,64 @@ index 3ba6ee6..3d70e1e 100644
      const userId = c.get('user').id;
      const account = getAccount(db, userId, 'microblog');
      if (!account?.enabled) return c.json({ message: 'Micro.blog is not linked or enabled' }, 400);
+@@ -575,6 +591,15 @@ export function connectorRoutes(
+     if (!getAccount(db, user.id, conn.id)) {
+       return c.json({ code: 2003, message: 'Connector not linked' }, 400);
+     }
++    if (conn.id === 'tolino') {
++      try {
++        await syncTolinoLibrary(db, user.id, transport);
++        const pulled = await pollConnector(db, user.id, 'tolino', transport);
++        return c.json({ pulled, queued: backfillConnector(db, user.id, conn.id) });
++      } catch (error) {
++        return c.json({ message: error instanceof Error ? error.message : 'Tolino library sync failed' }, 502);
++      }
++    }
+     if (conn.id === 'audiobookshelf') {
+       // Per-book failures are logged and skipped; a revoked key marks the account needs_reauth.
+       const signal = AbortSignal.timeout(60_000);
 diff --git a/src/routes/v1/progress.ts b/src/routes/v1/progress.ts
-index 644432a..bf3e5d6 100644
+index 644432a..b818ba1 100644
 --- a/src/routes/v1/progress.ts
 +++ b/src/routes/v1/progress.ts
-@@ -242,7 +242,7 @@ export function progressRoutes(db: DB, refreshProgress: ProgressRefresh = async
+@@ -107,13 +107,18 @@ export function progressRoutes(db: DB, refreshProgress: ProgressRefresh = async
+              AND NOT EXISTS (SELECT 1 FROM progress p WHERE p.user_id = d.user_id AND p.document = d.document)
+              AND NOT EXISTS (SELECT 1 FROM document_aliases a WHERE a.user_id = d.user_id AND a.alias = d.document)
+              AND (d.status IS NOT NULL OR EXISTS (SELECT 1 FROM stats_device_book s WHERE s.user_id = d.user_id AND s.document = d.document)
+-               OR EXISTS (SELECT 1 FROM progress_log l WHERE l.user_id = d.user_id AND l.document = d.document))` : ''}
++               OR EXISTS (SELECT 1 FROM progress_log l WHERE l.user_id = d.user_id AND l.document = d.document)
++               OR EXISTS (SELECT 1 FROM tolino_library t WHERE t.user_id=d.user_id AND t.document=d.document AND t.status='registered'))` : ''}
+          ) SELECT p.document, p.device_id, p.device, p.percentage, p.progress, p.position, p.updated_at,
+                 d.title, d.author, d.filename, d.language, d.cover_url, d.page_count,
+                 d.hc_slug, d.moods, d.genres, d.content_warnings, d.rating, d.user_rating, d.isbn, d.series, d.series_position, d.release_year,
+                 COALESCE(d.status, CASE WHEN p.percentage >= 0.98 OR ${completedBookStatsSql('p.user_id', 'p.document')}
+                   THEN 'finished' WHEN p.device_id IS NULL THEN 'paused' ELSE 'reading' END) AS status,
+-                d.status_at, d.pause_reason
++                d.status_at, d.pause_reason,
++                (p.device_id IS NULL AND d.status IS NULL
++                  AND NOT EXISTS (SELECT 1 FROM progress_log l WHERE l.user_id=p.user_id AND l.document=p.document)
++                  AND NOT EXISTS (SELECT 1 FROM stats_device_book s WHERE s.user_id=p.user_id AND s.document=p.document)
++                  AND EXISTS (SELECT 1 FROM tolino_library t WHERE t.user_id=p.user_id AND t.document=p.document AND t.status='registered')) AS registered_only
+          FROM library p
+          LEFT JOIN documents d ON d.user_id = p.user_id AND d.document = p.document
+          WHERE p.user_id = ?
+@@ -157,6 +162,7 @@ export function progressRoutes(db: DB, refreshProgress: ProgressRefresh = async
+       status: string;
+       status_at: number | null;
+       pause_reason: string | null;
++      registered_only: number;
+     }[];
+     const list = (v: string | null): string[] => {
+       try {
+@@ -182,6 +188,7 @@ export function progressRoutes(db: DB, refreshProgress: ProgressRefresh = async
+         return {
+           document: r.document,
+           history_only: r.device_id === null,
++          registered_only: !!r.registered_only,
+           title: r.title,
+           author: r.author,
+           filename: r.filename,
+@@ -242,7 +249,7 @@ export function progressRoutes(db: DB, refreshProgress: ProgressRefresh = async
        await refreshProgress(user.id, canonical);
      } catch (error) {
        const status = error instanceof Error && error.name === 'TimeoutError' ? 504 : 502;
@@ -963,23 +1474,24 @@ index 6058fd0..705b268 100644
      fake.on('/auth/login', 200, { accessToken: 'orbit-token' });
 diff --git a/test/tolino.test.ts b/test/tolino.test.ts
 new file mode 100644
-index 0000000..6ba8a62
+index 0000000..e528fa3
 --- /dev/null
 +++ b/test/tolino.test.ts
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,415 @@
 +import { crc32 } from 'node:zlib';
 +import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 +import { clearBookFusionEpubCache } from '../src/connectors/bookfusion-epub.js';
 +import { tolinoPoint, tolinoXPath } from '../src/connectors/tolino-epub.js';
 +import { tolinoConnector, tolinoDocumentHash } from '../src/connectors/tolino.js';
 +import { resetEncryptionKeyCache } from '../src/crypto/secrets.js';
-+import { carriesFor, setConnectorOptions, upsertAccount } from '../src/connectors/store.js';
++import { carriesFor, getMatch, setConnectorOptions, upsertAccount } from '../src/connectors/store.js';
 +import { drainQueue } from '../src/connectors/runner.js';
 +import { pollAll, startFanInWorker } from '../src/connectors/fanin.js';
 +import { upsertProgress } from '../src/routes/kosync.js';
 +import { makeTestApp, registerUser } from './helpers.js';
 +import type { ConnectorContext, HttpTransport, Match } from '../src/connectors/types.js';
 +import { openDatabase, type DB } from '../src/db/db.js';
++import { syncTolinoLibrary, tolinoLibraryStatus } from '../src/connectors/tolino-library.js';
 +
 +function files(body = '<p>Grüße😀<em>bold</em> end</p>') {
 +  return {
@@ -1057,6 +1569,8 @@ index 0000000..6ba8a62
 +    expect(init.redirect).toBe('error');
 +    expect(init.headers?.authorization).toBe(`Bearer ${credential.token}`);
 +    const path = new URL(url).pathname;
++    if (path === '/api/inventory') return { status: 200, text: async () => '',
++      json: async () => ({ PublicationInventory: { ebook: [], edata: [] } }) };
 +    if (path === '/api/download') return { status: 200, json: async () => null, text: async () => '',
 +      body: new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }) };
 +    if (path === '/api/sync-position') return { status: 200, text: async () => '',
@@ -1195,5 +1709,187 @@ index 0000000..6ba8a62
 +    const failed = await app.request(`/syncs/progress/${document}`, { headers });
 +    expect(failed.status).toBe(502);
 +    expect(await failed.json()).toMatchObject({ message: 'Reading progress refresh failed' });
++  } finally { db.close(); }
++});
++
++function libraryFixture() {
++  const fake = transport();
++  const calls: typeof fake.calls = [];
++  const inventory = [
++    { epubMetaData: { identifier: 'fixture-book', title: 'Cloud book', author: [{ name: 'Author' }],
++      deliverable: [{ contentFormat: 'application/epub+zip', contentEncrypted: false }] } },
++    { epubMetaData: { identifier: 'unread', title: 'Unread book',
++      deliverable: [{ contentFormat: 'application/epub+zip', contentEncrypted: false }] } },
++    { epubMetaData: { identifier: 'drm', title: 'Protected book',
++      deliverable: [{ contentFormat: 'application/epub+zip', contentEncrypted: true }] } },
++    { epubMetaData: { identifier: 'broken', title: 'Broken book',
++      deliverable: [{ contentFormat: 'application/epub+zip', contentEncrypted: false }] } },
++  ];
++  const http: HttpTransport = async (url, init) => {
++    calls.push({ url, method: init.method, body: init.body });
++    const parsed = new URL(url), id = parsed.searchParams.get('id');
++    if (parsed.pathname === '/api/sync-status') return { status: 200, text: async () => '', json: async () => ({ connected: true }) };
++    if (parsed.pathname === '/api/inventory') return { status: 200, text: async () => '',
++      json: async () => ({ PublicationInventory: { ebook: inventory, edata: [] } }) };
++    if (parsed.pathname === '/api/download' && id === 'broken') {
++      return { status: 503, text: async () => '', json: async () => null };
++    }
++    if (parsed.pathname === '/api/download' && (id === 'unread' || id === 'new-book')) {
++      const bytes = archive();
++      // Alter the ZIP archive comment, preserving every XML entry while changing binary identity.
++      bytes.writeUInt16LE(id.length, bytes.length - 2);
++      return { status: 200, text: async () => '', json: async () => null,
++        body: new ReadableStream({ start(c) { c.enqueue(Buffer.concat([bytes, Buffer.from(id)])); c.close(); } }) };
++    }
++    if (parsed.pathname === '/api/sync-position' && (id === 'unread' || id === 'new-book')) return {
++      status: 200, text: async () => '', json: async () => ({ revision: 'r1', position: null }),
++    };
++    return fake.http(url, init);
++  };
++  return { http, calls, inventory };
++}
++
++it('discovers all supported cloud books, persists binary identities, imports positions and lists unread books without fake progress', async () => {
++  const fake = libraryFixture();
++  const { app, db } = makeTestApp({}, { connectorTransport: fake.http });
++  try {
++    const { username, headers } = await registerUser(app);
++    const user = db.prepare('SELECT id FROM users WHERE username=?').get(username) as { id: number };
++    upsertAccount(db, user.id, 'tolino', credential, null);
++    expect(await pollAll(db, fake.http)).toBe(1);
++    expect(tolinoLibraryStatus(db, user.id)).toMatchObject({ running: false, registered: 2, skipped: 1, errors: 1 });
++    expect(db.prepare('SELECT COUNT(*) AS n FROM progress').get()).toMatchObject({ n: 1 });
++    const listing = await app.request('/api/v1/progress?include_history=1', { headers });
++    const books = (await listing.json()).items;
++    expect(books).toHaveLength(2);
++    expect(books.find((book: { title: string }) => book.title === 'Unread book')).toMatchObject({
++      registered_only: true, history_only: true, percentage: null, progress: null,
++    });
++    expect(books.find((book: { title: string }) => book.title === 'Cloud book')).toMatchObject({
++      percentage: 0.35, progress: xpath,
++    });
++    const downloads = fake.calls.filter(call => new URL(call.url).pathname === '/api/download' && !call.url.includes('broken')).length;
++    await syncTolinoLibrary(db, user.id, fake.http);
++    expect(fake.calls.filter(call => new URL(call.url).pathname === '/api/download' && !call.url.includes('broken'))).toHaveLength(downloads);
++    const status = await (await app.request('/api/v1/connectors', { headers })).json();
++    expect(status.connectors.find((c: { id: string }) => c.id === 'tolino').library).toMatchObject({ registered: 2, skipped: 1, errors: 1 });
++    expect(fake.calls.every(call => call.method === 'GET')).toBe(true);
++    expect(db.prepare('SELECT COUNT(*) AS n FROM connector_queue').get()).toMatchObject({ n: 0 });
++    const unread = books.find((book: { title: string }) => book.title === 'Unread book');
++    db.prepare("UPDATE documents SET status='finished' WHERE user_id=? AND document=?").run(user.id, unread.document);
++    const afterStatus = await (await app.request('/api/v1/progress?include_history=1', { headers })).json();
++    expect(afterStatus.items.find((book: { document: string }) => book.document === unread.document))
++      .toMatchObject({ status: 'finished', registered_only: false, percentage: null });
++  } finally { db.close(); }
++});
++
++it('shares overlapping discoveries and notices new titles on the next refresh without downloading existing ones again', async () => {
++  const fake = libraryFixture();
++  const { app, db } = makeTestApp();
++  try {
++    const { username } = await registerUser(app);
++    const user = db.prepare('SELECT id FROM users WHERE username=?').get(username) as { id: number };
++    upsertAccount(db, user.id, 'tolino', credential, null);
++    const first = syncTolinoLibrary(db, user.id, fake.http);
++    expect(syncTolinoLibrary(db, user.id, fake.http)).toBe(first);
++    await first;
++    fake.inventory[0].epubMetaData.title = 'Updated cloud title';
++    fake.inventory.push({ epubMetaData: { identifier: 'new-book', title: 'New cloud purchase',
++      deliverable: [{ contentFormat: 'application/epub+zip', contentEncrypted: false }] } });
++    clearBookFusionEpubCache();
++    await syncTolinoLibrary(db, user.id, fake.http);
++    expect(db.prepare('SELECT title FROM documents WHERE user_id=? AND document=?')
++      .get(user.id, tolinoDocumentHash(archive()))).toMatchObject({ title: 'Updated cloud title' });
++    expect(fake.calls.filter(call => new URL(call.url).pathname === '/api/download' && !call.url.includes('broken'))).toHaveLength(3);
++    expect(tolinoLibraryStatus(db, user.id).registered).toBe(3);
++  } finally { db.close(); }
++});
++
++it('exposes inventory failures and never treats them as a successful empty library', async () => {
++  const { app, db } = makeTestApp();
++  try {
++    const { username } = await registerUser(app);
++    const user = db.prepare('SELECT id FROM users WHERE username=?').get(username) as { id: number };
++    upsertAccount(db, user.id, 'tolino', credential, null);
++    const failed: HttpTransport = async () => ({ status: 503, text: async () => '', json: async () => null });
++    await expect(syncTolinoLibrary(db, user.id, failed)).rejects.toThrow('HTTP 503');
++    expect(db.prepare("SELECT last_error FROM connector_accounts WHERE user_id=? AND connector_id='tolino'")
++      .get(user.id)).toMatchObject({ last_error: expect.stringContaining('HTTP 503') });
++    expect(tolinoLibraryStatus(db, user.id).running).toBe(false);
++  } finally { db.close(); }
++});
++
++it('reports corrupt EPUBs and conflicting binary identities without remapping existing books', async () => {
++  const fake = libraryFixture();
++  for (const id of ['corrupt', 'duplicate']) fake.inventory.push({ epubMetaData: {
++    identifier: id, title: id, deliverable: [{ contentFormat: 'application/epub+zip', contentEncrypted: false }],
++  } });
++  const http: HttpTransport = async (url, init) => {
++    const parsed = new URL(url);
++    if (parsed.pathname === '/api/download' && ['corrupt', 'duplicate'].includes(parsed.searchParams.get('id')!)) {
++      const bytes = parsed.searchParams.get('id') === 'corrupt' ? Buffer.from('not an EPUB') : archive();
++      return { status: 200, text: async () => '', json: async () => null,
++        body: new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }) };
++    }
++    return fake.http(url, init);
++  };
++  const { app, db } = makeTestApp();
++  try {
++    const { username } = await registerUser(app);
++    const user = db.prepare('SELECT id FROM users WHERE username=?').get(username) as { id: number };
++    upsertAccount(db, user.id, 'tolino', credential, null);
++    await syncTolinoLibrary(db, user.id, http);
++    expect(tolinoLibraryStatus(db, user.id)).toMatchObject({ registered: 2, skipped: 1, errors: 3 });
++    expect(tolinoLibraryStatus(db, user.id).notices).toContainEqual({
++      title: 'duplicate', message: expect.stringContaining('conflicts'),
++    });
++    expect(getMatch(db, user.id, 'tolino', tolinoDocumentHash(archive()))?.external_id).toBe('fixture-book');
++    expect(db.prepare('SELECT COUNT(*) AS n FROM documents').get()).toMatchObject({ n: 2 });
++    expect(db.prepare('SELECT COUNT(*) AS n FROM progress').get()).toMatchObject({ n: 0 });
++  } finally { db.close(); }
++});
++
++it('starts discovery on connector link and supports explicit library refresh without cloud writes', async () => {
++  const fake = libraryFixture();
++  const { app, db } = makeTestApp({}, { connectorTransport: fake.http });
++  try {
++    const { username, headers } = await registerUser(app);
++    const user = db.prepare('SELECT id FROM users WHERE username=?').get(username) as { id: number };
++    const link = await app.request('/api/v1/connectors/tolino', {
++      method: 'PUT', headers, body: JSON.stringify({ credential }),
++    });
++    expect(link.status).toBe(200);
++    // Joins the job launched by the route, rather than starting an independent discovery.
++    await syncTolinoLibrary(db, user.id, fake.http);
++    await vi.waitFor(() => expect(db.prepare('SELECT COUNT(*) AS n FROM progress').get()).toMatchObject({ n: 1 }));
++    const refreshed = await app.request('/api/v1/connectors/tolino/library/refresh', {
++      method: 'POST', headers,
++    });
++    expect(refreshed.status).toBe(200);
++    expect(await refreshed.json()).toMatchObject({ count: 2, skipped: 1, errors: 1 });
++    expect(fake.calls.every(call => call.method === 'GET')).toBe(true);
++    expect(fake.calls.filter(call => new URL(call.url).pathname === '/api/download' && !call.url.includes('broken'))).toHaveLength(2);
++    const unlink = await app.request('/api/v1/connectors/tolino', { method: 'DELETE', headers });
++    expect(unlink.status).toBe(200);
++    expect(db.prepare('SELECT COUNT(*) AS n FROM tolino_library').get()).toMatchObject({ n: 0 });
++    expect(db.prepare('SELECT COUNT(*) AS n FROM progress').get()).toMatchObject({ n: 1 });
++  } finally { db.close(); }
++});
++
++it('does not commit a library download after unlinking while the request is in flight', async () => {
++  const fake = libraryFixture();
++  const { app, db } = makeTestApp();
++  try {
++    const { username } = await registerUser(app);
++    const user = db.prepare('SELECT id FROM users WHERE username=?').get(username) as { id: number };
++    upsertAccount(db, user.id, 'tolino', credential, null);
++    const http: HttpTransport = async (url, init) => {
++      const response = await fake.http(url, init);
++      if (new URL(url).pathname === '/api/download') db.prepare("DELETE FROM connector_accounts WHERE user_id=? AND connector_id='tolino'").run(user.id);
++      return response;
++    };
++    await syncTolinoLibrary(db, user.id, http);
++    expect(db.prepare('SELECT COUNT(*) AS n FROM documents').get()).toMatchObject({ n: 0 });
++    expect(db.prepare('SELECT COUNT(*) AS n FROM tolino_library').get()).toMatchObject({ n: 0 });
 +  } finally { db.close(); }
 +});

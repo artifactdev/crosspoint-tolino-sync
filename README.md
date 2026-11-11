@@ -227,8 +227,11 @@ helper access, strict cloud pulls and conflict-checked writes. It is pinned to
 a specific upstream server commit, not a firmware fork.
 
 See [installation and first-sync setup](tools/crosspoint-sync/README.md).
-Register downloaded book metadata before the first sync so an initial local
-book-start upload cannot overwrite existing cloud progress. Then use the
+The connector automatically downloads and registers supported bridge EPUBs on
+link, startup and subsequent refreshes, and imports existing cloud positions.
+Unread books appear without fabricated progress; DRM skips and failures are
+visible in Sync Settings. Discovery never writes reading positions to Tolino.
+Use **Binary** matching and **Send Document Metadata**, then use the
 reader's manual **Sync Progress** action to apply the cloud position.
 Normal book opening does not automatically restore it. Cloud writes require
 both `HELPER_SYNC_WRITES=1` and the connector's explicit sending option.

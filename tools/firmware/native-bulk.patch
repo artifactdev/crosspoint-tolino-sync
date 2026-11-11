@@ -50,6 +50,117 @@ index 8c73ee7..d5c0e88 100644
  STR_HOLD_OPEN_FOR_ACTIONS: "Zum Ausführen von Aktionen gedrückt halten"
  STR_FEED_UNAUTHORIZED: "Benutzername und Passwort überprüfen"
  STR_FEED_REDIRECTED: "Der Server wurde umgeleitet. Versuche es mit der https:// URL"
+diff --git a/lib/KOReaderSync/KOReaderSyncClient.cpp b/lib/KOReaderSync/KOReaderSyncClient.cpp
+index e3235e7..d351ea7 100644
+--- a/lib/KOReaderSync/KOReaderSyncClient.cpp
++++ b/lib/KOReaderSync/KOReaderSyncClient.cpp
+@@ -55,6 +55,27 @@ bool insufficientHeap() {
+   }
+   return false;
+ }
++
++void writeMetadata(JsonObject meta, const KOReaderMetadata& metadata) {
++  meta["filename"] = metadata.filename;
++  meta["title"] = metadata.title;
++  meta["authors"] = metadata.authors;
++  if (KOREADER_STORE.supportsExtendedMetadata()) {
++    if (!metadata.isbn.empty()) meta["isbn"] = metadata.isbn;
++    if (!metadata.asin.empty()) meta["asin"] = metadata.asin;
++    if (!metadata.series.empty()) meta["series"] = metadata.series;
++    if (metadata.seriesIndex.has_value()) meta["series_index"] = *metadata.seriesIndex;
++  }
++  JsonDocument extra;
++  if (!metadata.extraJson.empty() && deserializeJson(extra, metadata.extraJson) == DeserializationError::Ok) {
++    for (JsonPairConst kv : extra.as<JsonObjectConst>()) {
++      const JsonVariantConst value = kv.value();
++      if (!(value.is<const char*>() || value.is<bool>() || value.is<long long>() || value.is<double>())) continue;
++      if (!meta[kv.key().c_str()].isNull()) continue;
++      meta[kv.key().c_str()] = value;
++    }
++  }
++}
+ }  // namespace
+ 
+ KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
+@@ -215,6 +236,33 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
+   return SERVER_ERROR;
+ }
+ 
++KOReaderSyncClient::Error KOReaderSyncClient::registerDocument(const std::string& documentHash,
++                                                               const KOReaderMetadata& metadata) {
++  lastHttpCode = 0;
++  if (!KOREADER_STORE.hasCredentials()) return NO_CREDENTIALS;
++  if (insufficientHeap()) return LOW_MEMORY;
++  JsonDocument doc;
++  auto item = doc["items"].to<JsonArray>().add<JsonObject>();
++  writeMetadata(item, metadata);
++  item["document"] = documentHash;
++  std::string body;
++  serializeJson(doc, body);
++  freeink::SecureHttpClient http;
++  http.setInsecure();
++  if (!http.begin(KOREADER_STORE.getBaseUrl() + "/api/v1/documents")) return NETWORK_ERROR;
++  applyCustomHeaders(http);
++  applyAuthHeaders(http);
++  http.addHeader("Content-Type", "application/json");
++  const int code = http.sendRequest("PUT", body);
++  http.end();
++  lastHttpCode = code;
++  LOG_DBG("KOSync", "Register document response: %d", code);
++  if (code <= 0) return NETWORK_ERROR;
++  if (code >= 200 && code < 300) return OK;
++  if (code == 401) return AUTH_FAILED;
++  return SERVER_ERROR;
++}
++
+ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgress& progress) {
+   lastHttpCode = 0;
+   if (!KOREADER_STORE.hasCredentials()) {
+@@ -230,29 +278,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
+   JsonDocument doc;
+   doc["document"] = progress.document;
+   if (progress.metadata.has_value()) {
+-    auto meta = doc["metadata"].to<JsonObject>();
+-    meta["filename"] = progress.metadata->filename;
+-    meta["title"] = progress.metadata->title;
+-    meta["authors"] = progress.metadata->authors;
+-    if (KOREADER_STORE.supportsExtendedMetadata()) {
+-      if (!progress.metadata->isbn.empty()) meta["isbn"] = progress.metadata->isbn;
+-      if (!progress.metadata->asin.empty()) meta["asin"] = progress.metadata->asin;
+-      if (!progress.metadata->series.empty()) meta["series"] = progress.metadata->series;
+-      if (progress.metadata->seriesIndex.has_value()) meta["series_index"] = *progress.metadata->seriesIndex;
+-    }
+-
+-    JsonDocument extra;
+-    if (!progress.metadata->extraJson.empty() &&
+-        deserializeJson(extra, progress.metadata->extraJson) == DeserializationError::Ok) {
+-      for (JsonPairConst kv : extra.as<JsonObjectConst>()) {
+-        // Flat strings, numbers, and booleans keep their JSON type; null and
+-        // nested values are skipped, and the reserved keys above always win.
+-        const JsonVariantConst value = kv.value();
+-        if (!(value.is<const char*>() || value.is<bool>() || value.is<long long>() || value.is<double>())) continue;
+-        if (!meta[kv.key().c_str()].isNull()) continue;
+-        meta[kv.key().c_str()] = value;
+-      }
+-    }
++    writeMetadata(doc["metadata"].to<JsonObject>(), *progress.metadata);
+   }
+   doc["progress"] = progress.progress;
+   doc["percentage"] = progress.percentage;
+diff --git a/lib/KOReaderSync/KOReaderSyncClient.h b/lib/KOReaderSync/KOReaderSyncClient.h
+index ba527de..bb7bf59 100644
+--- a/lib/KOReaderSync/KOReaderSyncClient.h
++++ b/lib/KOReaderSync/KOReaderSyncClient.h
+@@ -106,6 +106,9 @@ class KOReaderSyncClient {
+    */
+   static Error getProgress(const std::string& documentHash, KOReaderProgress& outProgress);
+ 
++  /** Register book identity without publishing the reader's current position. */
++  static Error registerDocument(const std::string& documentHash, const KOReaderMetadata& metadata);
++
+   /**
+    * Update reading progress for a document.
+    * @param progress The progress data to upload
 diff --git a/platformio.ini b/platformio.ini
 index f96f663..78efcdc 100644
 --- a/platformio.ini
@@ -459,10 +570,17 @@ index 06ecd72..d999817 100644
      canSync = pluginevents::anySubscriber(static_cast<pluginevents::Event>(event));
    }
 diff --git a/src/activities/reader/KOReaderSyncActivity.cpp b/src/activities/reader/KOReaderSyncActivity.cpp
-index 75cd990..1424281 100644
+index 75cd990..a504f39 100644
 --- a/src/activities/reader/KOReaderSyncActivity.cpp
 +++ b/src/activities/reader/KOReaderSyncActivity.cpp
-@@ -25,6 +25,7 @@
+@@ -1,5 +1,6 @@
+ #include "KOReaderSyncActivity.h"
+ 
++#include <ArduinoJson.h>
+ #include <GfxRenderer.h>
+ #include <HalStorage.h>
+ #include <I18n.h>
+@@ -25,6 +26,7 @@
  #include "components/UITheme.h"
  #include "components/UiAppHelpers.h"  // list icons for the compare rows
  #include "fontIds.h"
@@ -470,8 +588,40 @@ index 75cd990..1424281 100644
  #include "network/WifiPowerSaveGuard.h"
  #include "util/PluginEvents.h"
  #include "util/PluginHttp.h"
-@@ -174,7 +175,7 @@ void KOReaderSyncActivity::performSync() {
+@@ -172,9 +174,39 @@ void KOReaderSyncActivity::performSync() {
+   }
+   const std::string primaryHash = documentHash;
  
++  std::string sidecar;
++  Storage.readFileToString("KOSync", epubPath + ".meta.json", 2 * 1024, sidecar);
++  JsonDocument metadata;
++  const bool tolinoBook = !sidecar.empty() && deserializeJson(metadata, sidecar) == DeserializationError::Ok &&
++                          metadata["tolino_id"].is<const char*>();
++  if (!directTolino && tolinoBook) {
++    if (primaryMethod != DocumentMatchMethod::BINARY || !KOREADER_STORE.supportsRichProgress() ||
++        !KOREADER_STORE.getSendMetadata()) {
++      {
++        RenderLock lock(*this);
++        state = SYNC_FAILED;
++        statusMessage = "Tolino requires CrossPoint server, Binary matching and Send metadata.";
++      }
++      requestUpdate(true);
++      return;
++    }
++    const KOReaderMetadata book = documentMetadata();
++    epub.reset();
++    const auto registered = KOReaderSyncClient::registerDocument(documentHash, book);
++    if (registered != KOReaderSyncClient::OK) {
++      {
++        RenderLock lock(*this);
++        state = SYNC_FAILED;
++        statusMessage = KOReaderSyncClient::errorString(registered);
++      }
++      requestUpdate(true);
++      return;
++    }
++  }
++
    LOG_DBG("KOSync", "Document hash (%s): %s", matchMethodName(primaryMethod), documentHash.c_str());
  
 -  if (KOREADER_STORE.getSyncClippings()) {
@@ -479,7 +629,7 @@ index 75cd990..1424281 100644
      {
        RenderLock lock(*this);
        statusMessage = tr(STR_SYNCING_CLIPPINGS);
-@@ -207,14 +208,15 @@ void KOReaderSyncActivity::performSync() {
+@@ -207,14 +239,15 @@ void KOReaderSyncActivity::performSync() {
  
    // Fetch remote progress. In smart mode, retain the alternate document-id
    // record until both records can be mapped after the Epub is reloaded.
@@ -493,11 +643,11 @@ index 75cd990..1424281 100644
    KOReaderProgress alternateProgress;
    bool hasAlternateProgress = false;
 -  if (smartSyncEnabled()) {
-+  if (!directTolino && smartSyncEnabled()) {
++  if (!directTolino && !tolinoBook && smartSyncEnabled()) {
      const DocumentMatchMethod altMethod = alternateMatchMethod(primaryMethod);
      const std::string altHash = calculateDocumentHashForMethod(epubPath, altMethod);
      if (!altHash.empty() && altHash != documentHash) {
-@@ -259,7 +261,7 @@ void KOReaderSyncActivity::performSync() {
+@@ -259,7 +292,7 @@ void KOReaderSyncActivity::performSync() {
      {
        RenderLock lock(*this);
        state = SYNC_FAILED;
@@ -506,7 +656,7 @@ index 75cd990..1424281 100644
      }
      requestUpdate(true);
      return;
-@@ -313,6 +315,15 @@ void KOReaderSyncActivity::performSync() {
+@@ -313,6 +346,15 @@ void KOReaderSyncActivity::performSync() {
      }
    }
  
@@ -522,16 +672,63 @@ index 75cd990..1424281 100644
    const ProgressComparison comparison =
        compareProgress(localPosition, localProgress.percentage, remotePosition, remoteProgress.percentage);
    if (smartSyncEnabled()) {
-@@ -420,7 +431,7 @@ void KOReaderSyncActivity::performUpload() {
+@@ -377,65 +419,25 @@ void KOReaderSyncActivity::performUpload() {
+     progress.position = std::move(pos);
+   }
+ 
+-  // Optionally include document metadata (KOReader PR #15306)
+-  if (KOREADER_STORE.getSendMetadata()) {
+-    // The Epub is released before the sync network calls and is only reloaded on the
+-    // remote-progress path (performSync). When uploading from NO_REMOTE_PROGRESS the
+-    // Epub is still null, so reload it here and guard the title/author reads to avoid
+-    // dereferencing a null Epub. Filename is derived from the path and is always safe.
+-    ensureEpubLoaded();
+-    KOReaderMetadata meta;
+-    const auto lastSlash = epubPath.rfind('/');
+-    meta.filename = (lastSlash != std::string::npos) ? epubPath.substr(lastSlash + 1) : epubPath;
+-    if (epub) {
+-      meta.title = epub->getTitle();
+-      meta.authors = epub->getAuthor();
+-      if (KOREADER_STORE.supportsExtendedMetadata()) {
+-        Epub::SyncMetadata syncMetadata;
+-        if (epub->loadSyncMetadata(syncMetadata)) {
+-          meta.isbn = std::move(syncMetadata.isbn);
+-          meta.asin = std::move(syncMetadata.asin);
+-          meta.series = std::move(syncMetadata.series);
+-          meta.seriesIndex = syncMetadata.seriesIndex;
+-        } else {
+-          LOG_DBG("KOSync", "Could not read extended EPUB metadata; sending core metadata only");
+-        }
+-      }
+-    } else {
+-      LOG_ERR("KOSync", "Epub unavailable for metadata; sending filename only");
+-    }
+-    // Plugin sidecar fields ("<book>.meta.json", written at download time via
+-    // the catalog sidecar mechanism or /api/plugin-fs) ride along so a custom
+-    // sync server can route progress by a service book id.
+-    // A missing sidecar (the common case) leaves extraJson empty.
+-    Storage.readFileToString("KOSync", epubPath + ".meta.json", 2 * 1024, meta.extraJson);
+-    progress.metadata = std::move(meta);
+-  }
++  if (KOREADER_STORE.getSendMetadata()) progress.metadata = documentMetadata();
+ 
+-  // Release the Epub before the network call so the TLS handshake has enough free heap
+-  // (consistent with the release-before-sync pattern in performSync); nothing below needs it.
++  // Release the book before TLS to leave room for the handshake.
+   epub.reset();
+-
+   KOReaderSyncClient::Error result;
    {
-     // Restore power-save before esp_wifi_stop below; set_ps on a stopped radio fails.
+-    // Restore power-save before esp_wifi_stop below; set_ps on a stopped radio fails.
      WifiPowerSaveGuard psGuard;
 -    result = KOReaderSyncClient::updateProgress(progress);
 +    result = directTolino ? tolino::push(epubPath, progress) : KOReaderSyncClient::updateProgress(progress);
    }
- 
-   // Drop the radio while user reads the result; full teardown happens at silent reboot.
-@@ -430,7 +441,7 @@ void KOReaderSyncActivity::performUpload() {
+-
+-  // Drop the radio while user reads the result; full teardown happens at silent reboot.
+   esp_wifi_stop();
+-
+   if (result != KOReaderSyncClient::OK) {
      {
        RenderLock lock(*this);
        state = SYNC_FAILED;
@@ -540,7 +737,53 @@ index 75cd990..1424281 100644
      }
      requestUpdate();
      return;
-@@ -452,8 +463,10 @@ void KOReaderSyncActivity::onEnter() {
+   }
+-
+   {
+     RenderLock lock(*this);
+     state = UPLOAD_COMPLETE;
+@@ -444,6 +446,40 @@ void KOReaderSyncActivity::performUpload() {
+   requestUpdate(true);
+ }
+ 
++KOReaderMetadata KOReaderSyncActivity::documentMetadata() {
++  // The Epub is released before the sync network calls and is only reloaded on the
++  // remote-progress path (performSync). When uploading from NO_REMOTE_PROGRESS the
++  // Epub is still null, so reload it here and guard the title/author reads to avoid
++  // dereferencing a null Epub. Filename is derived from the path and is always safe.
++  ensureEpubLoaded();
++  KOReaderMetadata meta;
++  const auto lastSlash = epubPath.rfind('/');
++  meta.filename = (lastSlash != std::string::npos) ? epubPath.substr(lastSlash + 1) : epubPath;
++  if (epub) {
++    meta.title = epub->getTitle();
++    meta.authors = epub->getAuthor();
++    if (KOREADER_STORE.supportsExtendedMetadata()) {
++      Epub::SyncMetadata syncMetadata;
++      if (epub->loadSyncMetadata(syncMetadata)) {
++        meta.isbn = std::move(syncMetadata.isbn);
++        meta.asin = std::move(syncMetadata.asin);
++        meta.series = std::move(syncMetadata.series);
++        meta.seriesIndex = syncMetadata.seriesIndex;
++      } else {
++        LOG_DBG("KOSync", "Could not read extended EPUB metadata; sending core metadata only");
++      }
++    }
++  } else {
++    LOG_ERR("KOSync", "Epub unavailable for metadata; sending filename only");
++  }
++  // Plugin sidecar fields ("<book>.meta.json", written at download time via
++  // the catalog sidecar mechanism or /api/plugin-fs) ride along so a custom
++  // sync server can route progress by a service book id.
++  // A missing sidecar (the common case) leaves extraJson empty.
++  Storage.readFileToString("KOSync", epubPath + ".meta.json", 2 * 1024, meta.extraJson);
++  return meta;
++}
++
+ void KOReaderSyncActivity::onEnter() {
+   Activity::onEnter();
+   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+@@ -452,8 +488,10 @@ void KOReaderSyncActivity::onEnter() {
    app.on(ACTION_ROW, &KOReaderSyncActivity::onResultRow, this);
    app.setScreen(&KOReaderSyncActivity::resultScreen, this);
  
@@ -553,10 +796,10 @@ index 75cd990..1424281 100644
      requestUpdate();
      return;
 diff --git a/src/activities/reader/KOReaderSyncActivity.h b/src/activities/reader/KOReaderSyncActivity.h
-index 7e83fae..3f00f62 100644
+index 7e83fae..b029b12 100644
 --- a/src/activities/reader/KOReaderSyncActivity.h
 +++ b/src/activities/reader/KOReaderSyncActivity.h
-@@ -79,6 +79,7 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
+@@ -79,10 +79,12 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
    // Reuses the KOReader WiFi connect/drain/return flow without a server: flush
    // plugged-outbox events instead of syncing progress.
    bool pluginEventsOnly = false;
@@ -564,6 +807,11 @@ index 7e83fae..3f00f62 100644
  
    void onWifiSelectionComplete(bool success);
    void performSync();
+   void performUpload();
++  KOReaderMetadata documentMetadata();
+   bool smartSyncEnabled() const;
+   void markAutoReturn();
+   void completeAlreadySynced();
 diff --git a/src/network/TolinoDirect.cpp b/src/network/TolinoDirect.cpp
 new file mode 100644
 index 0000000..d90e3b7

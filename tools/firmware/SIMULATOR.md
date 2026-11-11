@@ -155,6 +155,15 @@ prefixed with `[SIM] SCREEN:` helps diagnose its state.
 
 ## 5. Repeatable tests without desktop automation
 
+For bridge-backed reading positions, configure **Connectivity > KOReader
+Sync** with the bridge's Sync port (normally 8082; for example
+`http://192.168.8.3:18082`), **CrossPoint** server type, **Binary** document
+matching and **Send Document Metadata** enabled. A Sync account is required
+even if the container's web login is disabled. Choose **Ask Every Time** for
+the explicit remote/local action rows. The patched reader registers a Tolino
+book's metadata before fetching cloud progress, without publishing its current
+page. Rebuild and restart older simulator binaries to receive this fix.
+
 ```sh
 cd "$BRIDGE"
 npm ci
@@ -169,6 +178,20 @@ helper, isolated temporary SD and SDL dummy output, then shuts it down.
 It checks bulk downloads, pagination, repeat runs, renamed identities,
 collisions and cancellation at confirmation. Keep ports 19086/19087 free.
 It needs neither a running Docker container nor real credentials.
+
+Test the native metadata-registration/first-pull flow with a synthetic Sync
+server, exact saved offset and no cloud writes:
+
+```sh
+CROSSPOINT_SIM_BINARY="$DEV/native-build/simulator/program" \
+  node tools/firmware/simulator-direct-sync-smoke.cjs --bridge
+CROSSPOINT_SIM_BINARY="$DEV/native-build/simulator/program" \
+  node tools/firmware/simulator-direct-sync-smoke.cjs --bridge --filename
+CROSSPOINT_SIM_BINARY="$DEV/native-build/simulator/program" \
+  node tools/firmware/simulator-direct-sync-smoke.cjs --bridge --registration-failed
+```
+
+The last two cases verify explicit failures without uploading reader progress.
 
 For the **browser-only plugin UI test** without firmware:
 

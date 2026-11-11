@@ -21,6 +21,19 @@ downloads. Bulk downloads use the same bridge. For exact reader/cloud progress,
 also configure the [CrossPoint Sync connector](../crosspoint-sync/README.md)
 and the reader's Sync settings. No direct-session file is required.
 
+In the reader's **Connectivity > KOReader Sync** settings, select
+**CrossPoint**, **Binary** document matching and enable **Send Document
+Metadata**. Choose **Ask Every Time** to show **Apply remote progress** /
+**Upload local progress** instead of Smart Sync's automatic decision.
+For downloaded Tolino books, the patched firmware registers the sidecar book
+identity before its first progress GET, without uploading the current page.
+Failed registration stops the sync; filename matching is rejected explicitly.
+This fixes first-pull discovery and requires a rebuilt firmware/simulator;
+updating the container alone does not update the reader executable.
+The Sync app's library is separate from the bridge's cloud-library dashboard.
+Opening a book alone does not restore its cloud position: use **Sync Progress**
+and **Apply remote progress** first.
+
 A native direct-session file takes precedence over helper settings. When
 deliberately returning from direct mode, remove that file and any rotation
 backup/temp files from SD after checking them; never copy tokens into the

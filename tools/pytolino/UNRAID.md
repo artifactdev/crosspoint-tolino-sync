@@ -197,11 +197,14 @@ a child exits or health checks repeatedly fail; Docker restarts the container.
    in Settings with the helper API key. The server is already included
    in this container; do not install a second Sync container.
 7. Change `SYNC_REGISTRATION_DISABLED` to `1` and apply the Unraid template
-   again. Register downloaded metadata before each book's first sync, following
-   the [connector instructions](../crosspoint-sync/README.md#register-downloaded-books-before-the-first-sync).
-   That administrative registration tool is separate from the included server;
-   it requires Node 24 and a patched Sync source checkout on the machine
-   running the tool.
+   again. The connector automatically downloads and registers all supported
+   EPUBs from the bridge library, then imports existing cloud reading positions.
+   Unread books appear under **Available from Tolino**. Sync Settings shows
+   registration counts and DRM/unsupported-book notices; **Refresh and register
+   library** discovers new books immediately. Discovery also runs at startup
+   and every five minutes and never writes reading positions to Tolino.
+   See [automatic library registration](../crosspoint-sync/README.md#automatic-cloud-library-registration).
+   Update the container image for this feature, retaining your appdata and keys.
 8. Configure the reader's separate Sync settings: external **Sync origin**,
    CrossPoint protocol profile, Binary document matching, metadata enabled,
    and Sync account credentials (not Thalia credentials). Use **Sync Progress**

@@ -65,9 +65,9 @@ jobs:
           npm run build
           npm ci --prefix app
           npm run build --prefix app
-          npx vitest run test/tolino.test.ts test/connectors.test.ts
+          npx vitest run test/tolino.test.ts test/connectors.test.ts test/progress.test.ts test/documents-metadata.test.ts test/list-paging.test.ts
           cd app
-          npx vitest run src/api.test.js src/App.logout.test.jsx src/web-login.test.js
+          npx vitest run src/api.test.js src/App.logout.test.jsx src/web-login.test.js src/Library.test.jsx src/Settings.test.jsx
 
   verify-images:
     needs: verify-sync
@@ -115,6 +115,9 @@ jobs:
           python tools/pytolino/allinone_smoke.py local/crosspoint-tolino-bridge:validation
           python tools/pytolino/allinone_smoke.py local/crosspoint-tolino-bridge:validation --single-path
           python tools/pytolino/allinone_smoke.py local/crosspoint-tolino-bridge:validation --single-path --passwordless
+          docker run --rm --network none --entrypoint node \
+            -v "$PWD/tools/crosspoint-sync:/tests:ro" \
+            local/crosspoint-tolino-bridge:validation /tests/library-smoke.mjs
 
   publish:
     if: github.event_name != 'pull_request'

@@ -92,8 +92,10 @@ accounts are not supported. No DRM removal is performed.
 
 IMPORTANT: The SD plugin alone does not synchronize saved reader positions.
 The optional CrossPoint Sync server connector supports exact manual progress
-sync without a firmware patch; see tools/crosspoint-sync/README.md in the project
-repository. Register downloaded metadata first, use binary matching, then use
+sync without a firmware patch; see the [connector guide](../../tools/crosspoint-sync/README.md).
+The updated server registers supported bridge EPUBs automatically and imports
+existing cloud positions without writing to Tolino. Registration counts and
+DRM/unsupported-book notices appear in Sync Settings. Use binary matching, then use
 Sync Progress in the reader. Normal book opening does not automatically restore
 cloud progress. Cloud writes require explicit helper and connector opt-in.
 

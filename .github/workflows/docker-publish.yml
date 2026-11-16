@@ -14,11 +14,23 @@ on:
       - ".github/workflows/docker-publish.yml"
       - "tools/pytolino/**"
       - "tools/crosspoint-sync/**"
+      - "tolino-sync.crosspoint-plugin/**"
+      - "scripts/package.*"
+      - "scripts/local-setup.cjs"
+      - "scripts/phone-login-probe.cjs"
+      - "test/**"
+      - "package*.json"
   pull_request:
     paths:
       - ".github/workflows/docker-publish.yml"
       - "tools/pytolino/**"
       - "tools/crosspoint-sync/**"
+      - "tolino-sync.crosspoint-plugin/**"
+      - "scripts/package.*"
+      - "scripts/local-setup.cjs"
+      - "scripts/phone-login-probe.cjs"
+      - "test/**"
+      - "package*.json"
 
 permissions:
   contents: read
@@ -28,6 +40,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  verify-plugin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_tag: ${{ steps.package.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Test plugin and release packaging
+        run: |
+          npm ci
+          npm run check
+          npm test
+      - name: Package plugin for this build
+        id: package
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          if [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            npm run package -- --tag "$RELEASE_TAG"
+            printf 'release_tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          else
+            npm run package
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tolino-sync-plugin
+          path: |
+            dist/tolino-sync-*.crosspoint-plugin.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+
   verify-sync:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -121,7 +168,7 @@ jobs:
 
   publish:
     if: github.event_name != 'pull_request'
-    needs: [verify-sync, verify-images]
+    needs: [verify-plugin, verify-sync, verify-images]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -171,3 +218,27 @@ jobs:
           cache-to: type=gha,scope=allinone,mode=max
           provenance: true
           sbom: true
+
+  publish-plugin:
+    if: github.event_name == 'push' && needs.verify-plugin.outputs.release_tag != ''
+    needs: [verify-plugin, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolino-sync-plugin
+          path: plugin-release
+      - name: Publish stable plugin release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.verify-plugin.outputs.release_tag }}
+        run: |
+          cd plugin-release
+          sha256sum --check SHA256SUMS
+          gh release create "$RELEASE_TAG" ./*.crosspoint-plugin.zip SHA256SUMS \
+            --verify-tag --title "Thalia / Tolino plugin $RELEASE_TAG" \
+            --notes "Stable SD plugin matching the version-tagged Tolino Bridge image. Install or update on the reader through Plugin Hub > Community Plugins > Thalia / Tolino after its catalog refresh. Existing plugin settings and sessions are preserved by the firmware bundle installer. Requires firmware with Plugin Hub bundle installation and version tracking. For manual installation, extract the tolino-sync folder into an SD plugin root without replacing local settings. Firmware prereleases and main build artifacts are not stable plugin updates."

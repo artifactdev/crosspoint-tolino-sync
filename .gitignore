@@ -4,4 +4,8 @@
 /plugins/tolino-sync/cloud-state.json
 /plugins/tolino-sync/response.json
 /plugins/tolino-sync/response.json.part
+/tolino-sync.crosspoint-plugin/settings.json
+/tolino-sync.crosspoint-plugin/cloud-state.json
+/tolino-sync.crosspoint-plugin/response.json
+/tolino-sync.crosspoint-plugin/response.json.part
 /.playwright-mcp

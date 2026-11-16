@@ -7,7 +7,7 @@ const { readFileSync } = require("node:fs");
 const vm = require("node:vm");
 const {
   TolinoClient, normalizeInventory, downloadable, applyCloudChanges, readingState, settings
-} = require("../plugins/tolino-sync/plugin.js");
+} = require("../tolino-sync.crosspoint-plugin/plugin.js");
 
 const config = {
   hardwareId: "test-hardware",
@@ -77,7 +77,7 @@ function harness() {
 
 test("registers synchronously through the real browser-side plugin contract", () => {
   let registered;
-  vm.runInNewContext(readFileSync(require.resolve("../plugins/tolino-sync/plugin.js"), "utf8"), {
+  vm.runInNewContext(readFileSync(require.resolve("../tolino-sync.crosspoint-plugin/plugin.js"), "utf8"), {
     TextEncoder, window: { CrossPoint: { registerPlugin: (fn) => { registered = fn; } } }
   });
   assert.equal(typeof registered, "function");
@@ -99,7 +99,7 @@ test("browser plugin refreshes every five minutes and stops when its panel is re
     fetch: async url => h.files.get(url) || (url.startsWith("/api/files?") ? local(h.sdFiles) : local(null, 404)),
     setInterval(fn, ms) { timers.push({fn, ms}); return timers.length; },
     clearInterval(id) { cleared.push(id); }, Uint8Array, atob, btoa, URL, URLSearchParams};
-  vm.runInNewContext(readFileSync(require.resolve("../plugins/tolino-sync/plugin.js"), "utf8"), sandbox);
+  vm.runInNewContext(readFileSync(require.resolve("../tolino-sync.crosspoint-plugin/plugin.js"), "utf8"), sandbox);
   h.files.set(h.api.pluginFile("settings.json"), local(config));
   await sandbox.module.exports.render(root, h.api);
   assert.equal(timers[0].ms, 300000);
@@ -126,7 +126,7 @@ test("does not bind native browser fetch to the client instance", async () => {
     assert.notEqual(this, client, "Native fetch must not receive the client as its Window receiver");
     return local(null, 404);
   };
-  vm.runInNewContext(readFileSync(require.resolve("../plugins/tolino-sync/plugin.js"), "utf8"), sandbox);
+  vm.runInNewContext(readFileSync(require.resolve("../tolino-sync.crosspoint-plugin/plugin.js"), "utf8"), sandbox);
   client = new sandbox.module.exports.TolinoClient({ pluginFile: (file) => file });
   await client.load();
   assert.equal(client.config, null);
@@ -169,11 +169,20 @@ test("helper settings persist without Thalia credentials and reject unsafe origi
 });
 
 test("native device catalog shares browser connection settings and authenticates all helper requests", () => {
-  const manifest = JSON.parse(readFileSync(require.resolve("../plugins/tolino-sync/device.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync(require.resolve("../tolino-sync.crosspoint-plugin/device.json"), "utf8"));
   assert.equal(manifest.config.file, "settings.json");
   assert.equal(manifest.browse.url, "{cfg.helperUrl}/api/catalog");
   assert.equal(manifest.browse.items, "books");
   assert.equal(manifest.browse.fields.description, "description");
+  assert.deepEqual(manifest.browse.lists.map(view => new URL(
+    view.url.replace("{cfg.helperUrl}", "https://helper.test")).searchParams.get("sort")),
+  ["title-asc", "title-desc", "author-asc", "author-desc", "year-desc", "year-asc", null]);
+  assert.equal(new URL(manifest.browse.lists.at(-1).url.replace("{cfg.helperUrl}", "https://helper.test"))
+    .searchParams.get("year"), "unknown");
+  const search = new URL(manifest.browse.search.url.replace("{cfg.helperUrl}", "https://helper.test")
+    .replace("{query}", encodeURIComponent("Äpfel jahr:2024")));
+  assert.equal(search.pathname, "/api/catalog");
+  assert.equal(search.searchParams.get("q"), "Äpfel jahr:2024");
   assert.equal(manifest.download.url, "{cfg.helperUrl}/api/native-download?id={id}");
   for (const request of [manifest.browse, manifest.download]) {
     assert.equal(request.headers.Authorization, "Bearer {cfg.helperApiKey}");

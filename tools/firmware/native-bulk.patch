@@ -198,11 +198,17 @@ index fcf3ab3..989574e 100644
    if (!manifest.destDir.empty() && !protectedpaths::isPluginPath(manifest.destDir)) {
      LOG_ERR("PCAT", "dest_dir outside plugin space: %s", manifest.destDir.c_str());
      return false;
-@@ -624,6 +630,7 @@ void PluginCatalogActivity::enterCatalog() {
+@@ -624,6 +630,13 @@ void PluginCatalogActivity::enterCatalog() {
      fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
      return;
    }
 +  directTolino = pickerReturnName == "tolino-sync" && tolino::configured();
++  if (directTolino) {
++    manifest.browseLists.clear();
++    manifest.fixedListCount = 0;
++    manifest.searchUrl.clear();
++    manifest.searchBody.clear();
++  }
    requestUpdate();
    checkAndConnectWifi();
  }

@@ -37,6 +37,33 @@ generated firmware prerelease; use **only the X4 Pro application image**
 and follow the [firmware installation instructions](tools/firmware/README.md).
 These workflows must be committed and pushed before GitHub can run them.
 
+The [bridge publishing workflow](.github/workflows/docker-publish.yml) also
+tests and packages the SD plugin on every run. Stable `vMAJOR.MINOR.PATCH`
+tags publish a matching plugin ZIP and `SHA256SUMS` as a stable GitHub Release
+after the image has been published successfully. Main, manual and prerelease-tag
+builds provide Actions artifacts only; they are not offered as stable plugin
+updates. Firmware builds keep their separate experimental prereleases.
+
+### Native plugin updates
+
+On firmware supporting Plugin Hub, open **Home > Plugins > Plugin Hub >
+Community Plugins > Thalia / Tolino**, open Details, and confirm **Install**
+or **Update**. The Hub compares the installed manifest version with the latest
+stable release; it refreshes its catalog approximately every three hours.
+There is no silent background installation. Keep Wi-Fi available during updates.
+The firmware updates an existing `tolino-sync` directory in place across its
+supported plugin roots, preserving settings, sessions and downloaded books.
+Older firmware can continue to install the release ZIP manually.
+Installation does not configure the helper connection: first complete
+**Connection settings** in the reader's browser interface as described below.
+The native catalog has no connection editor; without saved settings it can
+show a feed error instead of the library.
+
+Plugin Hub discovers this public repository through its `crosspoint-plugin`
+GitHub topic and the root-level `tolino-sync.crosspoint-plugin` payload.
+A first stable release and a Hub catalog refresh are required before it appears.
+This only updates the SD plugin, not the reader firmware or Docker container.
+
 ## Features and limits
 
 | Feature | Support |
@@ -96,7 +123,9 @@ Use a CrossPoint build implementing the current
 including `relay`, `crypto`, `fetchToSd`, `writeFile` and `pluginFile`.
 This targets `develop` documentation, not a guaranteed released version.
 
-1. Copy `plugins/tolino-sync` to `/plugins/tolino-sync` on the SD card.
+1. Copy `tolino-sync.crosspoint-plugin` to `/plugins/tolino-sync` on the SD card
+   (rename the copied directory to `tolino-sync`), or extract the release ZIP
+   into `/plugins`. Plugin Hub can also perform this installation natively.
    `/.crosspoint/plugins/tolino-sync` and `/.plugins/tolino-sync` also work.
 2. Enable **Settings > Connectivity > Plugins**.
 3. Start **File Transfer** in **Join Network** mode.
@@ -128,6 +157,29 @@ existing merge behavior. Older firmware without device catalogs needs browser mo
 
 For the local Mac simulator use `http://127.0.0.1:8081`, not the Mac's currently
 unreachable LAN-IP API URL. A physical reader requires a reachable LAN helper.
+
+### Native sorting, search and year filters
+
+Update the bridge image first, then the SD plugin. The native catalog offers
+title A-Z/Z-A, author A-Z/Z-A, publication year newest/oldest, and an
+**Ohne Erscheinungsjahr** view. Missing authors/years remain last in either
+direction. This uses the firmware's existing catalog-list and JSON-search
+support, not a browser.
+
+In an open view, select its top row and use the button labelled **Search**.
+Enter title/author words, `jahr:2024`, or both, e.g. `Sommer jahr:2024`.
+Matching ignores case and accents; all words must match. `jahr:unbekannt`
+finds missing or invalid dates. Search spans the whole library and returns
+title-sorted results; Back returns to the view picker. It does not retain
+the previous sort view.
+
+Publication years come only from Tolino's `epubMetaData.issued`. Purchase/added
+years are not offered because no reliable corresponding provider field is
+currently established; publication dates are never relabelled as purchase dates.
+Downloads, filenames and positions are unchanged. **Alle fehlenden EPUBs laden**
+still downloads all supported missing EPUBs, not just the current view/results.
+The experimental containerless direct transport retains its original catalog
+in matching custom firmware; these controls require helper mode.
 
 ### Optional direct webreader-session mode
 
@@ -279,8 +331,30 @@ npm run package
 ```
 
 Packaging requires `zip`. The explicit file allowlist creates
-`dist/tolino-sync-0.1.0.zip` containing only the four distributable plugin files.
-Copy only those files when updating an existing SD installation, preserving settings.
+`dist/tolino-sync-<version>.crosspoint-plugin.zip` and `dist/SHA256SUMS`,
+using the version from the payload manifest. The ZIP contains only the four
+distributable files under `tolino-sync/`, never local settings or sessions.
+Copy only those files when manually updating an SD installation, preserving settings.
+Packaging tests also require `unzip`.
+
+### Publishing a stable plugin update
+
+1. Change `version` in `tolino-sync.crosspoint-plugin/manifest.json` to a new
+   `MAJOR.MINOR.PATCH` version, even if only the bridge changed and the plugin
+   is being republished alongside it. Keep `name`, `id` and the payload directory
+   unchanged so installed settings remain associated with the same plugin.
+2. Run the tests and `npm run package -- --tag v<version>`. A version/tag
+   mismatch fails rather than publishing an incorrectly versioned plugin.
+3. Commit, push, then push the matching `v<version>` tag. The bridge workflow
+   publishes the image and stable plugin release. A manual image `version_tag`
+   alone does not create a Git tag or stable plugin release.
+4. Ensure the repository is public and has the `crosspoint-plugin` topic
+   (`gh repo edit --add-topic crosspoint-plugin`). Wait for Plugin Hub's catalog
+   refresh, then check the native Install/Update entry.
+
+Use a new version/tag for every stable release; do not move old tags or replace
+their payloads. The manifest at the Git tag must already contain the matching
+version because Plugin Hub reads the tagged source, not a CI-only rewrite.
 
 ### Actual firmware simulator test
 

@@ -31,9 +31,24 @@ npx vitest run test/tolino.test.ts test/bookfusion-position.test.ts
 
 Do not apply the patch to an arbitrary upstream revision. The patch also adds
 the connector to Settings and to strict, per-book refresh on KOSync reads.
-The server operator sets `TOLINO_HELPER_URL` to the helper's origin. The
-connector's API-key field is the existing helper API key, **not** your Thalia
-password. Accounts use the server's existing encrypted credential storage.
+In Sync Settings, enter the helper's **API origin** and API key, **not** its
+dashboard URL or your Thalia password. The API normally listens on container
+port 8081. The URL must be reachable from the Sync server, not just from your
+browser. HTTP(S) origins without a path, query, credentials or fragment are
+accepted. Use HTTPS or a trusted private network; HTTP exposes the API key.
+
+The URL is optional: an empty field and existing token-only connections keep
+using the server's `TOLINO_HELPER_URL`, defaulting to `http://127.0.0.1:8081`.
+The combined container uses this internal default. A saved per-account URL
+takes precedence over the environment variable for validation, library
+discovery, EPUB downloads, cloud reads and writes. Both URL and key use the
+server's existing encrypted credential storage. **Change connection** edits
+an existing link without unlinking or deleting matches; re-enter the API key.
+The linked account label shows the validated helper origin.
+
+Like other self-hosted connectors, an authenticated Sync user can configure
+an endpoint reachable by the server. Restrict account registration and server
+network access appropriately. Helper redirects are not followed.
 
 ### Docker / Unraid
 
@@ -49,7 +64,8 @@ docker compose -f tools/pytolino/compose.yaml -f tools/crosspoint-sync/compose.y
 ```
 
 Open `http://127.0.0.1:8082/app/`, create/sign into a CrossPoint Sync account,
-and connect **Tolino / Thalia (local helper)** in Settings. The helper must already
+and connect **Tolino / Thalia (local helper)** in Settings using its API URL
+(or leave URL empty for the server default) and API key. The helper must already
 be signed into Thalia. Keep both data volumes and encryption keys across upgrades.
 Never use `down -v`. Do not regenerate keys for an existing installation.
 

@@ -8,7 +8,7 @@ const net = require("node:net");
 const path = require("node:path");
 const vm = require("node:vm");
 const {setTimeout: delay} = require("node:timers/promises");
-const {TolinoClient, downloadable, readingState} = require("../../plugins/tolino-sync/plugin.js");
+const {TolinoClient, downloadable, readingState} = require("../../tolino-sync.crosspoint-plugin/plugin.js");
 
 async function main() {
   if (process.argv.length !== 3 && !(process.argv.length === 6 && process.argv[3] === "--real-helper")) {
@@ -36,7 +36,7 @@ async function main() {
   fs.mkdirSync(path.join(sd, "Books/Tolino"), {recursive: true});
   fs.writeFileSync(path.join(sd, ".crosspoint/settings.json"), '{"pluginsEnabled":1,"pluginHubPromptHidden":1}');
   for (const name of ["manifest.json", "device.json", "plugin.js", "README.md"]) {
-    fs.copyFileSync(path.join(__dirname, "../../plugins/tolino-sync", name), path.join(plugin, name));
+    fs.copyFileSync(path.join(__dirname, "../../tolino-sync.crosspoint-plugin", name), path.join(plugin, name));
   }
   const env = {...process.env};
   for (const key of Object.keys(env)) if (key.startsWith("CROSSPOINT_SIM_")) delete env[key];
@@ -130,7 +130,8 @@ async function main() {
     assert.equal(destination, nativeDestination, "Browser and native downloads must share the same filename.");
     const steps = ["1500:DOWN", "1800:DOWN", "2100:ENTER", "2400:WAIT:SCREEN:.*Thalia / Tolino",
       "500:ENTER", "800:WAIT:SCREEN:.*Simulator WiFi",
-      "500:ENTER", "800:WAIT:SCREEN:.*Details"];
+      "500:ENTER", "800:WAIT:SCREEN:.*Titel A-Z",
+      "300:ENTER", "800:WAIT:SCREEN:.*Details"];
     for (let index = 0; index < nativeIndex; index++) steps.push((500 + index * 300) + ":DOWN");
     steps.push((800 + nativeIndex * 300) + ":ENTER",
       (1100 + nativeIndex * 300) + ":WAIT:Entering activity: Details",

@@ -172,6 +172,7 @@ All routes require `Authorization: Bearer <helper-api-key>`.
 | `GET /api/cover?id=…` | Cover from that library entry; PNG/JPEG/WebP/GIF only, maximum 5 MB |
 | `GET /api/catalog` | Compact native `books` catalog, read-only cloud progress in details, labelled DRM entries and JSON-safe sidecars |
 | `GET /api/catalog?supported=1` | Same authenticated catalog, restricted to supported EPUBs for native bulk downloads; no DRM entries |
+| `GET /api/catalog?sort=author-desc&year=2024&q=Sommer` | Native sort, publication-year filter and title/author search; combinable with `supported=1` |
 | `GET /api/native-download?id=…` | Validated EPUB for a SHA-256 catalog ID, resolved only against the loaded account library |
 
 The dashboard reports the last cloud-write outcome separately from cloud progress.
@@ -190,6 +191,23 @@ Progress-fetch failures fail the catalog request explicitly rather than
 displaying invented positions. Native downloads perform the same EPUB/DRM
 validation as browser downloads. Native catalog/download routes do not write
 cloud positions.
+
+Catalog `sort` accepts `title-asc` (default), `title-desc`, `author-asc`,
+`author-desc`, `year-asc` and `year-desc`. Missing authors/years sort last
+in either direction; title breaks ties. `year` accepts four digits or `unknown`.
+Years come only from valid ISO dates in `epubMetaData.issued`, including
+year-only and year-month values; absent/invalid values are returned as
+`year: null` and labelled unknown, never inferred from another date.
+
+`q` matches all whitespace-separated words across title, author and publication
+year, ignoring case and accents. Native search also accepts `jahr:2024`
+(`year:2024`) or `jahr:unbekannt` (`year:unknown`), optionally combined with
+title/author words. Only one year filter is allowed. Queries are bounded to
+256 characters; duplicate parameters, unknown options and invalid filters return
+400 before provider access. Search in the reader spans the entire catalog
+and uses title order rather than the previous sort view.
+Update the helper image before installing the matching plugin manifest;
+older helpers reject these new query parameters.
 
 Inventory/token requests have verified HTTPS, timeouts and at most one auth
 refresh/retry. Signed download URLs must use public HTTPS hosts; redirects are

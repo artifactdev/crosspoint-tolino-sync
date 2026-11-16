@@ -1,6 +1,6 @@
 {
   "title": "Thalia / Tolino",
-  "description": "Cloud library and EPUB downloads through Tolino Bridge.",
+  "description": "Sortierte Bibliothek; Suche nach Titel, Autor oder jahr:2024.",
   "config": {"file": "settings.json"},
   "auth": {"type": "none"},
   "browse": {
@@ -11,6 +11,16 @@
       "X-Tolino-Transport-Accepted": "{cfg.nativeTransportAccepted}"
     },
     "items": "books",
+    "lists": [
+      {"title": "Titel A-Z", "url": "{cfg.helperUrl}/api/catalog?sort=title-asc"},
+      {"title": "Titel Z-A", "url": "{cfg.helperUrl}/api/catalog?sort=title-desc"},
+      {"title": "Autor A-Z", "url": "{cfg.helperUrl}/api/catalog?sort=author-asc"},
+      {"title": "Autor Z-A", "url": "{cfg.helperUrl}/api/catalog?sort=author-desc"},
+      {"title": "Erscheinungsjahr: neueste zuerst", "url": "{cfg.helperUrl}/api/catalog?sort=year-desc"},
+      {"title": "Erscheinungsjahr: aelteste zuerst", "url": "{cfg.helperUrl}/api/catalog?sort=year-asc"},
+      {"title": "Ohne Erscheinungsjahr", "url": "{cfg.helperUrl}/api/catalog?year=unknown"}
+    ],
+    "search": {"url": "{cfg.helperUrl}/api/catalog?q={query}"},
     "page_size": 8,
     "fields": {
       "id": "id",
@@ -34,7 +44,7 @@
     "bulk": {
       "url": "{cfg.helperUrl}/api/catalog?supported=1",
       "title": "Alle fehlenden EPUBs laden",
-      "notice": "Alle unterstuetzten EPUBs laden. Vorhandene Buecher werden anhand ihrer Tolino-ID uebersprungen; DRM-Buecher sind ausgeschlossen. Lesestaende werden nicht automatisch angewendet. Zurueck bricht ab."
+      "notice": "Alle unterstuetzten EPUBs der gesamten Bibliothek laden, auch ausserhalb der aktuellen Suche/Ansicht. Vorhandene Buecher werden anhand ihrer Tolino-ID uebersprungen; DRM-Buecher sind ausgeschlossen. Lesestaende werden nicht automatisch angewendet. Zurueck bricht ab."
     },
     "sidecar": {"path": "{dest}.meta.json", "body": "{url}"}
   }

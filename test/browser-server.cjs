@@ -131,7 +131,7 @@ function createServer() {
       }
       if (url.pathname === "/plugin.js") {
         res.writeHead(200, { "Content-Type": "text/javascript" });
-        return res.end(readFileSync(require.resolve("../plugins/tolino-sync/plugin.js")));
+        return res.end(readFileSync(require.resolve("../tolino-sync.crosspoint-plugin/plugin.js")));
       }
       if (url.pathname === "/fixture/authorize") {
         const state = url.searchParams.get("state");

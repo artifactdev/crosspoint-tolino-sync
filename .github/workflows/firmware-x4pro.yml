@@ -13,9 +13,10 @@ on:
     paths:
       - ".github/workflows/firmware-x4pro.yml"
       - "tools/firmware/**"
-      - "plugins/tolino-sync/**"
+      - "tolino-sync.crosspoint-plugin/**"
       - "scripts/local-setup.cjs"
       - "scripts/package.sh"
+      - "scripts/package.cjs"
       - "scripts/phone-login-probe.cjs"
       - "test/**"
       - "package*.json"
@@ -23,9 +24,10 @@ on:
     paths:
       - ".github/workflows/firmware-x4pro.yml"
       - "tools/firmware/**"
-      - "plugins/tolino-sync/**"
+      - "tolino-sync.crosspoint-plugin/**"
       - "scripts/local-setup.cjs"
       - "scripts/package.sh"
+      - "scripts/package.cjs"
       - "scripts/phone-login-probe.cjs"
       - "test/**"
       - "package*.json"

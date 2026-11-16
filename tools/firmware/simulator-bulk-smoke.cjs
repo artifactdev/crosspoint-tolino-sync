@@ -91,7 +91,7 @@ async function main() {
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const url = "http://127.0.0.1:" + server.address().port;
-  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "../../plugins/tolino-sync/device.json"), "utf8"));
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "../../tolino-sync.crosspoint-plugin/device.json"), "utf8"));
   manifest.browse.page_size = 2;
   function writeManifest() {
     manifest.download.bulk.url = "{cfg.helperUrl}/api/catalog?supported=1" + (paged ? "&page={page}&limit={limit}" : "");
@@ -116,7 +116,9 @@ async function main() {
   const opening = [
     "1500:DOWN", "1800:DOWN", "2100:ENTER", "2400:WAIT:SCREEN:.*Thalia / Tolino",
     "500:ENTER", "800:WAIT:SCREEN:.*Simulator WiFi",
-    "500:ENTER", "800:WAIT:SCREEN:.*Alle fehlenden EPUBs",
+    "500:ENTER",
+    ...(direct ? [] : ["800:WAIT:SCREEN:.*Titel A-Z", "300:ENTER"]),
+    "800:WAIT:SCREEN:.*Alle fehlenden EPUBs",
     "300:DOWN", "600:DOWN", "900:DOWN", "1200:ENTER",
     "1500:WAIT:Entering activity: Details",
   ];

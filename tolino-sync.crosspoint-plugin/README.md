@@ -1,8 +1,47 @@
 Thalia / Tolino - SD plugin (experimental)
 
+Install and update on the reader through Home > Plugins > Plugin Hub >
+Community Plugins > Thalia / Tolino. Open Details and confirm Install or Update.
+Updates are offered only for newer stable GitHub Releases, not main builds or
+firmware prereleases. The Hub catalog refreshes approximately every three hours.
+This needs firmware with Plugin Hub, bundle installation and version tracking.
+An existing tolino-sync installation is updated in its current plugin root;
+settings, sessions and downloaded books are not part of the update payload.
+There is no unattended background installation. Keep Wi-Fi available during
+installation. Older firmware can still use the manual ZIP installation.
+
 Helper mode supports a native book catalog and EPUB downloads directly on the
 reader. A browser is needed only for initial connection setup and Thalia login.
 Imported webreader-session mode remains browser-only.
+There is no connection-settings editor on the reader. A fresh native installation
+must first be configured through the reader's browser interface as described
+below; otherwise the catalog has no helper address and can show a feed error.
+Installing or updating through Plugin Hub does not configure the connection.
+
+Native sorting/search (helper mode)
+
+Update the Tolino Bridge image before installing this plugin version; older
+helpers do not support the new catalog query parameters. The reader needs
+firmware with native catalog lists and JSON search. No new firmware is needed
+when those features are already supported.
+
+Open the native catalog and choose title A-Z/Z-A, author A-Z/Z-A, publication
+year newest/oldest first, or books without a publication year. Missing authors
+and years stay last in either sort direction.
+
+In an open view, select the top row and use the button labelled Search.
+Search matches title and author without case/accent differences. Multiple
+words must all match. Use jahr:2024 for a publication-year filter, optionally
+combined with text, e.g. Sommer jahr:2024. Use jahr:unbekannt for missing or
+invalid dates. The year comes only from Tolino's issued metadata; a reliable
+purchase/added date is not currently available and is never substituted.
+Search spans the whole library, not the previously selected view, and sorts
+results by title. Back returns to the view picker.
+
+Sorting/search never changes downloads or reading positions. Bulk download
+still includes the entire supported library, not just search results.
+Experimental containerless direct mode does not support these helper views;
+matching custom firmware keeps its original catalog without these controls.
 
 For a no-device UI test, run `node test/browser-server.cjs` from the project
 root and open the printed localhost URL. The local-only sign-in simulator uses
@@ -28,7 +67,7 @@ authentication. See the project README for the full test steps.
    from the Thalia auth/oauth2/token response. Keep these private.
 7. Save them in the plugin, then select Load cloud library.
 8. For native use, leave File Transfer and open Home > Plugins > Thalia / Tolino.
-   The reader fetches all cloud books from the helper. Open a book's details
+   Choose a catalog view; the reader fetches cloud books from the helper. Open a book's details
    and select Fetch to download it. No browser or File Transfer is needed.
    Reopen the catalog to refresh it. Cloud progress appears in book details;
    missing progress is not assumed to be zero. DRM/unsupported books are
@@ -69,7 +108,7 @@ existing book and clear its reader cache. Use the browser check to avoid repeat
 downloads on stock firmware.
 
 For **containerless native use**, run the
-[one-time browser setup](../../tools/setup/README.md) and install matching
+[one-time browser setup](../tools/setup/README.md) and install matching
 custom firmware. The reader then performs its own token refresh, catalog,
 downloads and exact **manual Sync Progress**, without the helper or a Sync
 server. Direct mode uses its own `direct-session.json`, not this browser
@@ -77,7 +116,7 @@ plugin's imported-session mode; do not make both refresh the same session.
 Cloud failures remain errors rather than silently switching transport.
 Read the setup's SD storage, local file-server and runtime TLS warnings.
 
-The optional [X4 Pro custom firmware](../../tools/firmware/README.md), based on
+The optional [X4 Pro custom firmware](../tools/firmware/README.md), based on
 original CrossPoint 2.0.0, enables **Alle fehlenden EPUBs laden** in this native
 catalog. It downloads all supported cloud EPUBs across pages, skips existing
 Tolino identities (including renamed files with their metadata), and leaves their
@@ -92,7 +131,7 @@ accounts are not supported. No DRM removal is performed.
 
 IMPORTANT: The SD plugin alone does not synchronize saved reader positions.
 The optional CrossPoint Sync server connector supports exact manual progress
-sync without a firmware patch; see the [connector guide](../../tools/crosspoint-sync/README.md).
+sync without a firmware patch; see the [connector guide](../tools/crosspoint-sync/README.md).
 The updated server registers supported bridge EPUBs automatically and imports
 existing cloud positions without writing to Tolino. Registration counts and
 DRM/unsupported-book notices appear in Sync Settings. Use binary matching, then use

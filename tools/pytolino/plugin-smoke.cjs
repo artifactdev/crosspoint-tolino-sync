@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const {createHash} = require("node:crypto");
-const {TolinoClient, readingState} = require("../../plugins/tolino-sync/plugin.js");
+const {TolinoClient, readingState} = require("../../tolino-sync.crosspoint-plugin/plugin.js");
 
 async function main() {
   const origin = "http://127.0.0.1:18081";

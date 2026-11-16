@@ -88,10 +88,10 @@ or rebuild the other target's output.
 
 ```sh
 mkdir -p "$DEV/runtime/fs_/plugins/tolino-sync" "$DEV/runtime/fs_/Books/Tolino"
-cp "$BRIDGE/plugins/tolino-sync/manifest.json" \
-  "$BRIDGE/plugins/tolino-sync/device.json" \
-  "$BRIDGE/plugins/tolino-sync/plugin.js" \
-  "$BRIDGE/plugins/tolino-sync/README.md" \
+cp "$BRIDGE/tolino-sync.crosspoint-plugin/manifest.json" \
+  "$BRIDGE/tolino-sync.crosspoint-plugin/device.json" \
+  "$BRIDGE/tolino-sync.crosspoint-plugin/plugin.js" \
+  "$BRIDGE/tolino-sync.crosspoint-plugin/README.md" \
   "$DEV/runtime/fs_/plugins/tolino-sync/"
 
 cd "$DEV/runtime"

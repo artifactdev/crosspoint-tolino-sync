@@ -17,6 +17,22 @@ BOOK = {"publicationId": "publication-test", "epubMetaData": {
 INVENTORY = {"PublicationInventory": {"ebook": [BOOK], "edata": []}}
 
 
+def catalog_inventory():
+    rows = [
+        ("a", "Äpfel", "Zulu", "2022-01-01"),
+        ("z", "Zebra", "Anna", "2024-06-01"),
+        ("b", "Beta", "", None),
+        ("g", "Gamma", "Anna", "2024-03-01"),
+        ("d", "Delta", "Mara Sommer", "2023-02-29"),
+    ]
+    return {"PublicationInventory": {"ebook": [
+        {"publicationId": identifier, "epubMetaData": {
+            **BOOK["epubMetaData"], "identifier": identifier, "title": title,
+            "author": [{"name": author}] if author else [], "issued": issued,
+        }} for identifier, title, author, issued in rows
+    ], "edata": []}}
+
+
 def fixture():
     state = Mock()
     state.lock = threading.Lock()
@@ -98,6 +114,66 @@ class CompanionTests(unittest.TestCase):
         with patch.object(helper, "inventory", side_effect=APIError(502, "Provider unavailable")), \
                 self.assertRaises(APIError):
             helper.catalog()
+
+    def test_native_catalog_sorts_both_directions_and_keeps_unknown_values_last(self):
+        helper = fixture()
+        orders = {
+            "title-asc": ["Äpfel", "Beta", "Delta", "Gamma", "Zebra"],
+            "title-desc": ["Zebra", "Gamma", "Delta", "Beta", "Äpfel"],
+            "author-asc": ["Gamma", "Zebra", "Delta", "Äpfel", "Beta"],
+            "author-desc": ["Äpfel", "Delta", "Gamma", "Zebra", "Beta"],
+            "year-desc": ["Gamma", "Zebra", "Äpfel", "Beta", "Delta"],
+            "year-asc": ["Äpfel", "Gamma", "Zebra", "Beta", "Delta"],
+        }
+        with patch.object(helper, "inventory", return_value=catalog_inventory()), \
+                patch.object(helper, "reading_progress", return_value={"positions": {}}):
+            for sort, expected in orders.items():
+                with self.subTest(sort=sort):
+                    self.assertEqual([book["title"] for book in helper.catalog(sort=sort)["books"]], expected)
+
+    def test_native_catalog_search_combines_title_author_and_publication_year_without_guessing_dates(self):
+        helper = fixture()
+        inventory = catalog_inventory()
+        inventory["PublicationInventory"]["ebook"][2]["purchaseDate"] = "2024-01-01"
+        with patch.object(helper, "inventory", return_value=inventory), \
+                patch.object(helper, "reading_progress", return_value={"positions": {}}):
+            for query, expected in (
+                ("APFEL", ["Äpfel"]), ("anna jahr:2024", ["Gamma", "Zebra"]),
+                ("zEBra ANNA year:2024", ["Zebra"]), ("2022", ["Äpfel"]),
+                ("jahr:unbekannt", ["Beta", "Delta"]), ("missing", []),
+            ):
+                with self.subTest(query=query):
+                    self.assertEqual([book["title"] for book in helper.catalog(query=query)["books"]], expected)
+            self.assertEqual([book["title"] for book in helper.catalog(year="2024", sort="title-desc")["books"]],
+                             ["Zebra", "Gamma"])
+            unknown = helper.catalog(year="unknown")["books"]
+            self.assertEqual([book["title"] for book in unknown], ["Beta", "Delta"])
+            self.assertTrue(all(book["year"] is None and "Erscheinungsjahr: unbekannt" in book["description"]
+                                for book in unknown))
+            self.assertEqual(helper.catalog(year="2024", query="mara")["books"], [])
+        for issued, year in (("2024", "2024"), ("2024-06", "2024"), ("2024-06-01", "2024"),
+                            ("2024-06-01T23:59:59Z", "2024"), ("0001", "0001")):
+            dated = {"PublicationInventory": {"ebook": [{**BOOK, "epubMetaData": {
+                **BOOK["epubMetaData"], "issued": issued}}], "edata": []}}
+            with self.subTest(issued=issued), patch.object(helper, "inventory", return_value=dated), \
+                    patch.object(helper, "reading_progress", return_value={"positions": {}}):
+                self.assertEqual(helper.catalog(year=year)["books"][0]["year"], int(year))
+
+    def test_native_catalog_rejects_invalid_filters_before_contacting_the_provider(self):
+        helper = fixture()
+        invalid = [
+            {"sort": "random"}, {"sort": ""}, {"year": "0000"}, {"year": ""},
+            {"year": "24"}, {"year": "2024-01-01"}, {"year": 2024},
+            {"query": "jahr:garbage"}, {"query": "jahr:2024 jahr:2023"},
+            {"query": "year:2024", "year": "2024"}, {"query": "a" * 257},
+            {"query": "title\ninjected"}, {"query": None},
+        ]
+        with patch.object(helper, "inventory") as inventory:
+            for options in invalid:
+                with self.subTest(options=options), self.assertRaises(APIError) as error:
+                    helper.catalog(**options)
+                self.assertEqual(error.exception.status, 400)
+            inventory.assert_not_called()
 
     def test_native_download_ids_only_resolve_current_library_books(self):
         helper = fixture()
@@ -469,10 +545,39 @@ class CompanionTests(unittest.TestCase):
                     self.assertEqual(response.status, 200)
                     self.assertEqual(json.loads(response.read()), {"books": []})
                     catalog.assert_called_with(supported_only=True)
-                    connection.request("GET", "/api/catalog?url=anything", headers=native_headers)
+                    connection.request("GET", "/api/catalog?sort=author-desc&year=2024&q=Anna&supported=1",
+                                       headers=native_headers)
                     response = connection.getresponse()
-                    self.assertEqual(response.status, 400)
+                    self.assertEqual(response.status, 200)
                     response.read()
+                    catalog.assert_called_with(supported_only=True, sort="author-desc", year="2024", query="Anna")
+                    for query in ("url=anything", "sort=title-asc&sort=title-desc", "year=2024&year=2023",
+                                  "q=one&q=two", "supported=0", "supported=1&supported=1"):
+                        with self.subTest(query=query):
+                            connection.request("GET", "/api/catalog?" + query, headers=native_headers)
+                            response = connection.getresponse()
+                            self.assertEqual(response.status, 400)
+                            response.read()
+                    self.assertEqual(catalog.call_count, 3)
+                with patch.object(helper, "inventory", return_value=catalog_inventory()), \
+                        patch.object(helper, "reading_progress", return_value={"positions": {}}):
+                    for query, expected in (
+                        ("q=%C3%84pfel+jahr%3A2022", ["Äpfel"]),
+                        ("sort=title-desc&year=2024", ["Zebra", "Gamma"]),
+                        ("year=unknown", ["Beta", "Delta"]),
+                        ("q=no-match", []),
+                    ):
+                        with self.subTest(query=query):
+                            connection.request("GET", "/api/catalog?" + query, headers=native_headers)
+                            response = connection.getresponse()
+                            self.assertEqual(response.status, 200)
+                            self.assertEqual([book["title"] for book in json.loads(response.read())["books"]], expected)
+                    for query in ("sort=", "year=", "q=jahr%3Ainvalid", "q=year%3A2024&year=2023"):
+                        with self.subTest(query=query):
+                            connection.request("GET", "/api/catalog?" + query, headers=native_headers)
+                            response = connection.getresponse()
+                            self.assertEqual(response.status, 400)
+                            response.read()
                 with patch.object(helper, "download", return_value=(io.BytesIO(b"EPUB"), 4)) as download:
                     connection.request("GET", "/api/native-download?id=" + native_id("synthetic-book"),
                                        headers=native_headers)

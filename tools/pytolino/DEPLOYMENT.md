@@ -41,6 +41,15 @@ replace `:latest`. Pull requests build the multi-architecture image and test
 the patched Sync source, process supervision and the combined service lifecycle
 without logging in to GHCR or pushing images.
 
+Every workflow run also builds a versioned SD-plugin ZIP and `SHA256SUMS` as
+the `tolino-sync-plugin` Actions artifact. Stable `vMAJOR.MINOR.PATCH` tags
+must match the plugin manifest version and publish those files in a stable
+GitHub Release after image publication. Plugin Hub can then offer native
+Install/Update after its catalog refresh. Main/manual builds and firmware
+prereleases do not enter that update channel. See the
+[plugin release instructions](../../README.md#publishing-a-stable-plugin-update).
+Updating the container does not automatically replace files on the reader's SD.
+
 For production, pin `BRIDGE_IMAGE` in the environment file to a
 version or commit tag. `main`/`latest` are convenient moving tags, not update
 pins. After publishing, update the image tag and run `docker compose pull`
@@ -220,7 +229,11 @@ Unkeyed requests to the helper API should return 401.
 
 Open Sync at `http://HOST:8082/app/` from a trusted local browser, create the
 Sync account, then add **Tolino / Thalia (local helper)** in Settings using the
-helper API key. The helper must already be signed in. After the initial
+helper API key. Leave its optional API URL empty for the all-in-one container's
+internal helper, or enter another helper's API origin reachable from Sync.
+Do not use the dashboard origin; the helper API normally uses container port
+8081. **Change connection** updates an existing link without unlinking.
+The helper must already be signed in. After the initial
 account is created, set `SYNC_REGISTRATION_DISABLED=1` in the private env file
 and recreate the container. Keep account credentials separate from Thalia
 credentials.

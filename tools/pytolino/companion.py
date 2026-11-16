@@ -14,7 +14,9 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import zipfile
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
 
@@ -47,6 +49,24 @@ def epub_supported(book):
 
 def native_id(identifier):
     return hashlib.sha256(identifier.encode()).hexdigest()
+
+
+def catalog_text(value):
+    return "".join(char for char in unicodedata.normalize("NFKD", value.casefold())
+                   if not unicodedata.combining(char))
+
+
+def catalog_year(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        if re.fullmatch(r"[0-9]{4}", value):
+            return datetime(int(value), 1, 1).year
+        if re.fullmatch(r"[0-9]{4}-[0-9]{2}", value):
+            value += "-01"
+        return datetime.fromisoformat(value).year
+    except ValueError:
+        return None
 
 
 def epub_filename(title):
@@ -355,7 +375,25 @@ class Companion:
             self.reading_version += 1
             return {"synced": True, "unchanged": False, "revision": verified["revision"]}
 
-    def catalog(self, supported_only=False):
+    def catalog(self, supported_only=False, sort="title-asc", year=None, query=""):
+        if sort not in ("title-asc", "title-desc", "author-asc", "author-desc", "year-asc", "year-desc"):
+            raise APIError(400, "Unknown catalog sort order.")
+        if (not isinstance(query, str) or len(query) > 256
+                or any(ord(char) < 32 or ord(char) == 127 for char in query)):
+            raise APIError(400, "Catalog search must be at most 256 characters without control characters.")
+        terms = []
+        for term in query.split():
+            field, separator, value = term.casefold().partition(":")
+            if separator and field in ("jahr", "year"):
+                if year is not None:
+                    raise APIError(400, "Use only one publication-year filter.")
+                year = "unknown" if value in ("unknown", "unbekannt") else value
+            else:
+                terms.append(catalog_text(term))
+        if year is not None and (not isinstance(year, str)
+                                 or (year != "unknown" and not re.fullmatch(r"(?!0000)[0-9]{4}", year))):
+            raise APIError(400, "Publication year must be four digits or unknown (search: jahr:2024).")
+        selected_year = None if year in (None, "unknown") else int(year)
         inventory = self.inventory()["PublicationInventory"]
         positions = self.reading_progress()["positions"]
         books = {}
@@ -371,6 +409,12 @@ class Companion:
             if not isinstance(authors, list) or any(not isinstance(author, dict) for author in authors):
                 raise APIError(502, "Catalog entry has invalid authors.")
             author = ", ".join(item["name"] for item in authors if isinstance(item.get("name"), str))
+            issued_year = catalog_year(meta.get("issued"))
+            if year is not None and issued_year != selected_year:
+                continue
+            searchable = catalog_text(title + " " + author + " " + (str(issued_year) if issued_year else ""))
+            if not all(term in searchable for term in terms):
+                continue
             supported = epub_supported(book)
             if supported_only and not supported:
                 continue
@@ -388,11 +432,25 @@ class Companion:
                 "filename": epub_filename(title),
                 "title": epub_filename(title)[:-5] if supported else title + " [DRM / unsupported]",
                 "author": author,
-                "description": description + " " + progress + " Reader positions are not synchronized.",
+                "year": issued_year,
+                "description": description + " " + progress + " Reader positions are not synchronized."
+                               + f" Erscheinungsjahr: {issued_year if issued_year is not None else 'unbekannt'}.",
                 # Inserted as a complete JSON document, never interpolated into JSON string literals.
                 "sidecar": sidecar,
             }
-        return {"books": sorted(books.values(), key=lambda item: item["title"].casefold())}
+        ordered = sorted(books.values(), key=lambda item: (catalog_text(item["title"]), item["id"]))
+        descending = sort.endswith("-desc")
+        if sort.startswith("author-"):
+            known = [book for book in ordered if book["author"].strip()]
+            unknown = [book for book in ordered if not book["author"].strip()]
+            ordered = sorted(known, key=lambda item: catalog_text(item["author"]), reverse=descending) + unknown
+        elif sort.startswith("year-"):
+            known = [book for book in ordered if book["year"] is not None]
+            unknown = [book for book in ordered if book["year"] is None]
+            ordered = sorted(known, key=lambda item: item["year"], reverse=descending) + unknown
+        elif descending:
+            ordered.reverse()
+        return {"books": ordered}
 
     def native_identifier(self, digest):
         if not re.fullmatch(r"[a-f0-9]{64}", digest):
@@ -528,7 +586,7 @@ def create_api_server(companion, port=8081):
                 return self.answer(401, {"error": "Valid helper API key required."})
             try:
                 url = urlsplit(self.path)
-                query = parse_qs(url.query, strict_parsing=True)
+                query = parse_qs(url.query, strict_parsing=True, keep_blank_values=True)
                 if self.command == "GET" and url.path in ("/api/status", "/api/sync-status") and not query:
                     state = companion.state.snapshot()
                     value = {"connected": state["connected"], "busy": state["busy"], "apiVersion": 1}
@@ -551,9 +609,13 @@ def create_api_server(companion, port=8081):
                             or self.headers.get("X-Tolino-Transport-Accepted") != "true"):
                         raise APIError(400, "Save helper mode and accept transport/storage warnings in browser settings first.")
                     if url.path == "/api/catalog":
-                        if query not in ({}, {"supported": ["1"]}):
-                            raise APIError(400, "Native catalog only accepts supported=1.")
-                        return self.answer(200, companion.catalog(supported_only=bool(query)))
+                        if (set(query) - {"supported", "sort", "year", "q"}
+                                or any(len(values) != 1 for values in query.values())
+                                or ("supported" in query and query["supported"] != ["1"])):
+                            raise APIError(400, "Native catalog accepts only single supported=1, sort, year and q parameters.")
+                        options = {name: query[key][0] for key, name in
+                                   (("sort", "sort"), ("year", "year"), ("q", "query")) if key in query}
+                        return self.answer(200, companion.catalog(supported_only="supported" in query, **options))
                 if self.command == "POST" and url.path == "/api/reading-state" and not query:
                     length = int(self.headers.get("Content-Length", "0"))
                     if not 0 < length <= 8192 or self.headers.get("Content-Type") != "application/json":

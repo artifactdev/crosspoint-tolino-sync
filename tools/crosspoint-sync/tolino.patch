@@ -167,23 +167,46 @@ index 69aa789..b86d000 100644
    it('shows the grid-derived streak and uses the device total until dated history loads', () => {
      const summary = { devices: [{ device: 'CrossInk' }], current_streak: 8, seconds: 3600, completed: 0 }
 diff --git a/app/src/Settings.jsx b/app/src/Settings.jsx
-index a7298ea..f6c3c19 100644
+index a7298ea..91ee452 100644
 --- a/app/src/Settings.jsx
 +++ b/app/src/Settings.jsx
 @@ -47,6 +47,7 @@ const HINTS = {
    'readwise-reader': 'Archives books in Reader when you finish them, and brings your Reader progress back.',
    kosync: 'Mirrors your reading progress to another KOReader-compatible (KOSync) server. For Calibre-Web, use your library URL ending in /kosync.',
    bookfusion: 'Syncs reading progress with BookFusion. You approve the request on bookfusion.com.',
-+  tolino: 'Exact reading positions through your local Tolino Bridge. Enter its API key. The server operator sets TOLINO_HELPER_URL. Use binary document matching and register the downloaded book sidecar first. Cloud writes require explicit opt-in.',
++  tolino: 'Exact reading positions through Tolino Bridge. Enter its API URL and API key, not the dashboard URL. Leave the URL empty to use the server-configured helper. The Sync server must be able to reach it. Use binary document matching. Cloud writes require explicit opt-in.',
    audiobookshelf: 'Keeps your place between the ebook and the audiobook. Create an API key in Audiobookshelf under Settings, Users, API Keys.',
    jellyfin: 'Syncs reading progress with your Jellyfin book library (Jellyfin 12.0 or newer). Sign in with your Jellyfin username and password.',
    bookorbit: 'Syncs progress both ways, adds clippings as highlights, and exchanges reading sessions for matched books. Imports BookOrbit history and exports sessions recorded by newer CrossInk firmware. Includes other BookOrbit reader history alongside your device stats. Repeated sessions are counted once.',
-@@ -560,6 +561,24 @@ function Service({ session, conn, onChange }) {
+@@ -428,12 +429,16 @@ export function LinkForm({ session, conn, onLinked }) {
+       <form className="space-y-2">
+         <input
+           className={`${field} font-mono`}
+-          placeholder="https://audiobookshelf.example.com"
++          placeholder={conn.id === 'tolino' ? 'Helper API URL (optional)' : 'https://audiobookshelf.example.com'}
++          aria-label={conn.id === 'tolino' ? 'Helper API URL' : 'Server URL'}
+           value={v.server ?? ''}
+           onChange={set('server')}
+           inputMode="url"
+           autoCapitalize="none"
+         />
++        {conn.id === 'tolino' && (
++          <p className="text-xs text-stone-500">Use the API origin, e.g. http://bridge:8081, not the dashboard or Sync URL. Leave empty for the server default. HTTP sends the API key unencrypted; use only a trusted private network or HTTPS.</p>
++        )}
+         <input className={`${field} font-mono`} type="password" placeholder="API key" value={v.token ?? ''} onChange={set('token')} autoComplete="off" />
+         {submit('Connect', () => ({
+           server: (v.server ?? '').trim(),
+@@ -560,6 +565,29 @@ function Service({ session, conn, onChange }) {
              conn.queue.dead > 0 && `${conn.queue.dead} item${conn.queue.dead === 1 ? '' : 's'} failed`].filter(Boolean).join(' · ')}
          </p>
        )}
 +      {conn.linked && conn.id === 'tolino' && (
 +        <div className="mt-2 space-y-2 text-xs text-stone-600">
++          <button type="button" disabled={!!busy || conn.library?.running}
++            className="rounded-full px-3 py-2 font-semibold text-brand-600 ring-1 ring-brand-200"
++            onClick={() => setOpenForm(!openForm)}>
++            {openForm ? 'Cancel connection change' : 'Change connection'}
++          </button>
 +          <p role="status">{conn.library?.running ? 'Registering cloud library… ' : ''}
 +            {conn.library?.registered ?? 0} books registered · {conn.library?.skipped ?? 0} skipped · {conn.library?.errors ?? 0} failed
 +          </p>
@@ -203,7 +226,16 @@ index a7298ea..f6c3c19 100644
        {conn.linked && conn.queue_errors?.length > 0 && (
          <div className="mt-2 space-y-1 text-xs">
            {conn.queue_errors.map((e) => {
-@@ -630,7 +649,7 @@ function Services({ session }) {
+@@ -584,7 +612,7 @@ function Service({ session, conn, onChange }) {
+         <Options conn={conn} save={(v) => act('options', () => api.setConnectorOptions(session, conn.id, v))} />
+       )}
+       {conn.id === 'microblog' && conn.linked && !needsRelink && <MicroblogPosting session={session} onChange={onChange} />}
+-      {openForm && (!conn.linked || needsRelink) && (
++      {openForm && (!conn.linked || needsRelink || conn.id === 'tolino') && (
+         <LinkForm
+           session={session}
+           conn={conn}
+@@ -630,7 +658,7 @@ function Services({ session }) {
    const [data, error, reload, loading] = useLoad(() => api.connectors(session), [session], `connectors ${session.username}@${session.server}`)
    const reloadRef = useRef(reload)
    reloadRef.current = reload
@@ -213,7 +245,7 @@ index a7298ea..f6c3c19 100644
      if (!pending || loading) return
      const timer = setTimeout(() => reloadRef.current(), 5000)
 diff --git a/app/src/Settings.test.jsx b/app/src/Settings.test.jsx
-index 124ed9e..7c2f6b8 100644
+index 124ed9e..10de40a 100644
 --- a/app/src/Settings.test.jsx
 +++ b/app/src/Settings.test.jsx
 @@ -8,7 +8,7 @@ vi.mock('./api.js', () => ({
@@ -225,10 +257,47 @@ index 124ed9e..7c2f6b8 100644
  }))
  vi.mock('./shareCard.js', () => ({ saveFile: vi.fn() }))
  vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
-@@ -224,6 +224,42 @@ describe('service delivery status', () => {
+@@ -52,6 +52,19 @@ describe('LinkForm', () => {
+     expect(screen.getByPlaceholderText('Paste token')).toBeTruthy()
+   })
+
++  it.each(['https://helper.test', ''])('saves the Tolino helper URL and API key, retaining the optional server default: %s', async (server) => {
++    api.linkConnector.mockResolvedValue({ linked: true })
++    const onLinked = vi.fn()
++    render(<LinkForm session={session} conn={{ id: 'tolino', name: 'Tolino', credential_kind: 'abs' }} onLinked={onLinked} />)
++    fireEvent.change(screen.getByRole('textbox', { name: 'Helper API URL' }), { target: { value: server } })
++    fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: ' synthetic-key ' } })
++    fireEvent.click(screen.getByRole('button', { name: 'Connect', exact: true }))
++    await waitFor(() => expect(api.linkConnector).toHaveBeenCalledWith(session, 'tolino', {
++      server, token: 'synthetic-key',
++    }))
++    expect(onLinked).toHaveBeenCalledOnce()
++  })
++
+   it('Spotify is a sign-in button, not a token field', () => {
+     render(<LinkForm session={session} conn={spotify} onLinked={() => {}} />)
+     expect(signIn()).toBeTruthy()
+@@ -224,6 +237,59 @@ describe('service delivery status', () => {
      status: 'ok', queue: { pending: 0, dead: 0 }, ...extra })
    const renderSettings = () => render(<Settings session={reader} theme={['system', vi.fn()]} onSession={vi.fn()} onLogout={vi.fn()} />)
  
++  it('changes a linked Tolino connection without unlinking or removing its matches', async () => {
++    api.connectors.mockResolvedValue({ connectors: [connector({
++      id: 'tolino', name: 'Tolino', credential_kind: 'abs',
++    })] })
++    api.linkConnector.mockResolvedValue({ linked: true })
++    renderSettings()
++    fireEvent.click(await screen.findByRole('button', { name: 'Change connection' }))
++    fireEvent.change(screen.getByRole('textbox', { name: 'Helper API URL' }), { target: { value: 'https://new-helper.test' } })
++    fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'synthetic-new-key' } })
++    fireEvent.click(screen.getByRole('button', { name: 'Connect', exact: true }))
++    await waitFor(() => expect(api.linkConnector).toHaveBeenCalledWith(reader, 'tolino', {
++      server: 'https://new-helper.test', token: 'synthetic-new-key',
++    }))
++    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Helper API URL' })).toBeNull())
++    expect(api.unlinkConnector).not.toHaveBeenCalled()
++  })
++
 +  it('shows Tolino registration counts, per-book notices and explicit refresh errors', async () => {
 +    api.connectors.mockResolvedValue({ connectors: [connector({ id: 'tolino', name: 'Tolino',
 +      last_error: 'Inventory unavailable', library: { registered: 2, skipped: 1, errors: 1, running: false,
@@ -956,10 +1025,10 @@ index 0000000..65ef837
 +}
 diff --git a/src/connectors/tolino.ts b/src/connectors/tolino.ts
 new file mode 100644
-index 0000000..0caf510
+index 0000000..1dac420
 --- /dev/null
 +++ b/src/connectors/tolino.ts
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,187 @@
 +import { createHash } from 'node:crypto';
 +import { cachedEpub } from './bookfusion-epub.js';
 +import { tolinoPoint, tolinoXPath } from './tolino-epub.js';
@@ -971,10 +1040,15 @@ index 0000000..0caf510
 +}
 +
 +export function tolinoConnection(credential: Credential) {
-+  // An operator-configured destination, never a user-controlled server-side fetch URL.
-+  const url = new URL(process.env.TOLINO_HELPER_URL ?? 'http://127.0.0.1:8081');
-+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
-+      url.pathname !== '/' || url.search || url.hash) failure('Invalid TOLINO_HELPER_URL');
++  if (credential.server !== undefined && typeof credential.server !== 'string') {
++    failure('Tolino helper URL must be text');
++  }
++  const server = credential.server?.trim() || process.env.TOLINO_HELPER_URL || 'http://127.0.0.1:8081';
++  const url = URL.canParse(server) ? new URL(server) : null;
++  if (!url || !['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
++      url.pathname !== '/' || url.search || url.hash) {
++    failure('Tolino helper URL must be an HTTP(S) origin without path, credentials, query or fragment');
++  }
 +  const token = credential.token;
 +  if (typeof token !== 'string' || token.length < 32 || /[^\x21-\x7e]/.test(token)) {
 +    failure('A valid Tolino helper API key is required');
@@ -1068,20 +1142,33 @@ index 0000000..0caf510
 +  tier: 3,
 +  capabilities: { read: true, write: true },
 +  carries: ['progress', 'finished'],
-+  credentialKind: 'token',
++  credentialKind: 'abs',
 +  beta: true,
 +  options: [
 +    { key: 'progress', label: 'Send reading positions to Tolino', default: false, gates: 'progress' },
 +    { key: 'finished', label: 'Send finished reading positions to Tolino', default: false, gates: 'finished' },
 +  ],
 +  async validate(credential, http) {
-+    const { origin, headers } = tolinoConnection(credential);
-+    const res = await http(`${origin}/api/sync-status`, { method: 'GET', headers, redirect: 'error',
-+      signal: AbortSignal.timeout(10_000) });
-+    check(res.status);
-+    const status = await res.json() as { connected?: unknown };
-+    return status?.connected === true ? { ok: true, accountLabel: 'Local Tolino Bridge' }
-+      : { ok: false, error: 'Sign in on the Tolino helper dashboard first' };
++    try {
++      const { origin, headers } = tolinoConnection(credential);
++      const res = await http(`${origin}/api/sync-status`, { method: 'GET', headers, redirect: 'error',
++        signal: AbortSignal.timeout(10_000) });
++      check(res.status);
++      const status = await res.json() as { connected?: unknown } | null;
++      if (typeof status?.connected !== 'boolean') {
++        return { ok: false, error: 'Invalid helper status; use the helper API URL (container port 8081), not the dashboard' };
++      }
++      return status.connected ? { ok: true, accountLabel: `Tolino Bridge (${origin})` }
++        : { ok: false, error: 'Sign in on the Tolino helper dashboard first' };
++    } catch (error) {
++      if (error instanceof ConnectorOperationError || (error instanceof TypeError && error.message === 'fetch failed')) {
++        return { ok: false, error: error.message };
++      }
++      if (error instanceof SyntaxError) {
++        return { ok: false, error: 'Invalid helper JSON; use the helper API URL (container port 8081), not the dashboard' };
++      }
++      throw error;
++    }
 +  },
 +  async match() { return null; },
 +  async pullProgress(credential, match, http, sinceMs, ctx) {
@@ -1474,15 +1561,15 @@ index 6058fd0..705b268 100644
      fake.on('/auth/login', 200, { accessToken: 'orbit-token' });
 diff --git a/test/tolino.test.ts b/test/tolino.test.ts
 new file mode 100644
-index 0000000..e528fa3
+index 0000000..5aca6a8
 --- /dev/null
 +++ b/test/tolino.test.ts
-@@ -0,0 +1,415 @@
+@@ -0,0 +1,449 @@
 +import { crc32 } from 'node:zlib';
 +import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 +import { clearBookFusionEpubCache } from '../src/connectors/bookfusion-epub.js';
 +import { tolinoPoint, tolinoXPath } from '../src/connectors/tolino-epub.js';
-+import { tolinoConnector, tolinoDocumentHash } from '../src/connectors/tolino.js';
++import { tolinoConnection, tolinoConnector, tolinoDocumentHash } from '../src/connectors/tolino.js';
 +import { resetEncryptionKeyCache } from '../src/crypto/secrets.js';
 +import { carriesFor, getMatch, setConnectorOptions, upsertAccount } from '../src/connectors/store.js';
 +import { drainQueue } from '../src/connectors/runner.js';
@@ -1539,6 +1626,32 @@ index 0000000..e528fa3
 +  vi.restoreAllMocks();
 +});
 +
++it('uses a saved helper origin before the server default and preserves legacy token-only credentials', () => {
++  expect(tolinoConnection(credential).origin).toBe('http://127.0.0.1:8081');
++  process.env.TOLINO_HELPER_URL = 'http://operator-helper:8081';
++  expect(tolinoConnection(credential).origin).toBe('http://operator-helper:8081');
++  expect(tolinoConnection({ ...credential, server: '' }).origin).toBe('http://operator-helper:8081');
++  expect(tolinoConnection({ ...credential, server: ' https://helper.test/ ' }).origin).toBe('https://helper.test');
++});
++
++it.each([
++  'not a URL', 'file:///tmp/helper', 'ftp://helper.test', 'https://user:password@helper.test',
++  'https://helper.test/dashboard', 'https://helper.test?token=secret', 'https://helper.test#fragment', 42,
++])('rejects invalid helper origins without sending the API key: %s', async server => {
++  const http = vi.fn<HttpTransport>();
++  const result = await tolinoConnector.validate({ ...credential, server }, http);
++  expect(result).toMatchObject({ ok: false, error: expect.stringContaining('helper URL') });
++  expect(http).not.toHaveBeenCalled();
++});
++
++it('reports dashboard HTML and invalid status responses as configuration errors', async () => {
++  for (const json of [async () => { throw new SyntaxError('HTML response'); }, async () => ({})]) {
++    const http: HttpTransport = async () => ({ status: 200, text: async () => '', json });
++    expect(await tolinoConnector.validate({ ...credential, server: 'https://dashboard.test' }, http))
++      .toMatchObject({ ok: false, error: expect.stringContaining('API URL') });
++  }
++});
++
 +it('converts real DOM sibling indices, chapter paths and UTF-8 bytes exactly', async () => {
 +  expect(await tolinoXPath(epub(), point)).toBe(xpath);
 +  expect(await tolinoPoint(epub(), xpath)).toBe(point);
@@ -1592,7 +1705,8 @@ index 0000000..e528fa3
 +});
 +it('sends one conflict-checked exact point and never retries a 409', async () => {
 +  const bytes = archive(), fake = transport(bytes);
-+  const result = await tolinoConnector.push(credential, match, {
++  const saved = { ...credential, server: 'https://write-helper.test' };
++  const result = await tolinoConnector.push(saved, match, {
 +    kind: 'progress', timestamp: 200, percentage: 0.4, progress: xpath,
 +  }, fake.http, context(tolinoDocumentHash(bytes)));
 +  expect(result.ok).toBe(true);
@@ -1600,9 +1714,10 @@ index 0000000..e528fa3
 +    id: 'fixture-book', revision: 'r1', expectedModified: 100000,
 +    position: point, progress: 0.4, modified: 200000,
 +  });
++  expect(fake.calls.every(call => new URL(call.url).origin === saved.server)).toBe(true);
 +  const conflict: HttpTransport = async (url, init) => init.method === 'PUT'
 +    ? { status: 409, json: async () => null, text: async () => '' } : fake.http(url, init);
-+  expect(await tolinoConnector.push(credential, match, {
++  expect(await tolinoConnector.push(saved, match, {
 +    kind: 'progress', timestamp: 200, percentage: 0.4, progress: xpath,
 +  }, conflict, context(tolinoDocumentHash(bytes)))).toMatchObject({ ok: false, retryable: false });
 +});
@@ -1849,18 +1964,24 @@ index 0000000..e528fa3
 +  } finally { db.close(); }
 +});
 +
-+it('starts discovery on connector link and supports explicit library refresh without cloud writes', async () => {
++it('stores a custom helper origin on link and uses it for discovery, refresh and progress without cloud writes', async () => {
 +  const fake = libraryFixture();
-+  const { app, db } = makeTestApp({}, { connectorTransport: fake.http });
++  const origin = 'https://other-helper.test';
++  process.env.TOLINO_HELPER_URL = 'http://wrong-default:8081';
++  const http: HttpTransport = async (url, init) => {
++    expect(new URL(url).origin).toBe(origin);
++    return fake.http(url, init);
++  };
++  const { app, db } = makeTestApp({}, { connectorTransport: http });
 +  try {
 +    const { username, headers } = await registerUser(app);
 +    const user = db.prepare('SELECT id FROM users WHERE username=?').get(username) as { id: number };
 +    const link = await app.request('/api/v1/connectors/tolino', {
-+      method: 'PUT', headers, body: JSON.stringify({ credential }),
++      method: 'PUT', headers, body: JSON.stringify({ credential: { ...credential, server: origin } }),
 +    });
 +    expect(link.status).toBe(200);
 +    // Joins the job launched by the route, rather than starting an independent discovery.
-+    await syncTolinoLibrary(db, user.id, fake.http);
++    await syncTolinoLibrary(db, user.id, http);
 +    await vi.waitFor(() => expect(db.prepare('SELECT COUNT(*) AS n FROM progress').get()).toMatchObject({ n: 1 }));
 +    const refreshed = await app.request('/api/v1/connectors/tolino/library/refresh', {
 +      method: 'POST', headers,
